@@ -43,7 +43,7 @@ pub fn Conn.wrap(mut tcp net.TcpConn, buffered []u8) Conn {
 pub fn Conn.wrap_ssl(ssl &mbedtls.SSLConn, buffered []u8) Conn {
 	return Conn{
 		kind:   .ssl
-		ssl:    ssl
+		ssl:    unsafe { ssl }
 		rbuf:   buffered.clone()
 		closed: false
 	}
