@@ -364,6 +364,16 @@ fn test_http_date_shape() {
 	assert parts[0].ends_with(',')
 }
 
+// Hand-rolled formatter must match the old custom_format output byte for byte.
+fn test_http_date_matches_custom_format() {
+	mut ts := i64(0)
+	for ts < 4102444800 { // 1970 .. 2100, ~every 9.7 days + odd seconds
+		t := time.unix(ts)
+		assert http_date(t) == t.custom_format('ddd, DD MMM YYYY HH:mm:ss') + ' GMT', '${ts}'
+		ts += 839_999
+	}
+}
+
 fn test_status_503_reason() {
 	r := Response.text(503, 'busy')
 	assert r.reason == 'Service Unavailable'

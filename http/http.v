@@ -851,9 +851,35 @@ fn status_text(code int) string {
 
 // http_date formats t as RFC 9110 IMF-fixdate (HTTP-date), always GMT.
 // Pass time.utc() (or any UTC Time) for correct wire values.
+const http_day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const http_month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct',
+	'Nov', 'Dec']
+
 pub fn http_date(t time.Time) string {
-	// ddd, DD MMM YYYY HH:mm:ss GMT
-	return t.custom_format('ddd, DD MMM YYYY HH:mm:ss') + ' GMT'
+	// ddd, DD MMM YYYY HH:mm:ss GMT — built directly; custom_format re-parses its
+	// pattern on every call and this runs per response when send_date is on.
+	mut b := []u8{cap: 29}
+	append_str(mut b, http_day_names[t.day_of_week() - 1])
+	append_str(mut b, ', ')
+	append_2d(mut b, t.day)
+	b << ` `
+	append_str(mut b, http_month_names[t.month - 1])
+	b << ` `
+	append_2d(mut b, t.year / 100)
+	append_2d(mut b, t.year % 100)
+	b << ` `
+	append_2d(mut b, t.hour)
+	b << `:`
+	append_2d(mut b, t.minute)
+	b << `:`
+	append_2d(mut b, t.second)
+	append_str(mut b, ' GMT')
+	return b.bytestr()
+}
+
+fn append_2d(mut buf []u8, n int) {
+	buf << u8(`0` + n / 10)
+	buf << u8(`0` + n % 10)
 }
 
 // is_head_method is true for "HEAD" (any ASCII case) without a full to_upper alloc.
@@ -866,9 +892,7 @@ fn is_head_method(method string) bool {
 }
 
 fn append_str(mut buf []u8, s string) {
-	for i in 0 .. s.len {
-		buf << s[i]
-	}
+	unsafe { buf.push_many(s.str, s.len) }
 }
 
 // append_status_code writes a decimal HTTP status (typically 100–599) without formatting.
