@@ -335,3 +335,123 @@ fn test_pipeline_then_connection_close() {
 	assert b2 == 'ok:/2'
 	assert b3 == 'ok:/last'
 }
+
+fn start_pipeline_server_mode(addr string, epoll bool) {
+	opts := ServerOptions{
+		handle_signals: false
+		idle_timeout:   5 * time.second
+		read_timeout:   5 * time.second
+		write_timeout:  5 * time.second
+		epoll_cores:    if epoll { 1 } else { 0 }
+	}
+	spawn fn [opts, addr] () {
+		listen_and_serve_full(addr, fn (req http.Request) http.Response {
+			if req.method == 'POST' {
+				return http.Response.text(200, 'echo:${req.text()}')
+			}
+			return http.Response.text(200, 'ok:${req.path}')
+		}, [], opts) or {}
+	}()
+	pipeline_wait()
+}
+
+fn pipeline_dial(addr string) !&net.TcpConn {
+	mut client := net.dial_tcp(addr)!
+	client.set_read_timeout(5 * time.second)
+	client.set_write_timeout(5 * time.second)
+	return client
+}
+
+// Responses are batched per read; every queued response must still go out, in
+// order, before the 400 for a bad request later in the same burst. Both I/O paths.
+fn test_pipeline_bad_request_mid_burst_flushes_prior_responses() {
+	for epoll in [false, true] {
+		addr := pipeline_free_addr()
+		start_pipeline_server_mode(addr, epoll)
+		mut client := pipeline_dial(addr) or {
+			assert false, 'dial: ${err}'
+			return
+		}
+		burst := 'GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\nGET /3 HTTP/1.1\r\nHost : x\r\n\r\nGET /never HTTP/1.1\r\nHost: x\r\n\r\n'
+		client.write(burst.bytes()) or { assert false, 'write: ${err}' }
+		mut pr := PipeReader{}
+		for want in ['ok:/1', 'ok:/2'] {
+			st, body := pr.next_response(mut client) or {
+				assert false, 'epoll=${epoll} ${want}: ${err}'
+				return
+			}
+			assert st == 200 && body == want, 'epoll=${epoll}: ${st} ${body}'
+		}
+		st, _ := pr.next_response(mut client) or {
+			assert false, 'epoll=${epoll} 400: ${err}'
+			return
+		}
+		assert st == 400, 'epoll=${epoll}'
+		// connection closes after the 400; /never is not served
+		if _, body := pr.next_response(mut client) {
+			assert false, 'epoll=${epoll} served after 400: ${body}'
+		}
+		client.close() or {}
+	}
+}
+
+// Deep bursts (TFB plaintext uses depth 16) and POST/GET mixes on both I/O paths,
+// including a burst larger than one read chunk.
+fn test_pipeline_deep_bursts_both_paths() {
+	for epoll in [false, true] {
+		addr := pipeline_free_addr()
+		start_pipeline_server_mode(addr, epoll)
+		mut client := pipeline_dial(addr) or {
+			assert false, 'dial: ${err}'
+			return
+		}
+		mut pr := PipeReader{}
+		for round in 0 .. 3 {
+			n := [16, 300, 16][round]
+			mut burst := ''
+			for i in 0 .. n {
+				if i % 3 == 0 {
+					p := 'p${i}'
+					burst += 'POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: ${p.len}\r\n\r\n${p}'
+				} else {
+					burst += 'GET /r${round}/${i} HTTP/1.1\r\nHost: x\r\n\r\n'
+				}
+			}
+			client.write(burst.bytes()) or { assert false, 'write: ${err}' }
+			for i in 0 .. n {
+				want := if i % 3 == 0 { 'echo:p${i}' } else { 'ok:/r${round}/${i}' }
+				st, body := pr.next_response(mut client) or {
+					assert false, 'epoll=${epoll} round=${round} i=${i}: ${err}'
+					return
+				}
+				assert st == 200 && body == want, 'epoll=${epoll} round=${round} i=${i}: ${body}'
+			}
+		}
+		client.close() or {}
+	}
+}
+
+// Connection: close in the middle of a burst on the epoll path: earlier responses,
+// then the close response, then EOF (later requests dropped).
+fn test_pipeline_close_mid_burst_epoll() {
+	addr := pipeline_free_addr()
+	start_pipeline_server_mode(addr, true)
+	mut client := pipeline_dial(addr) or {
+		assert false, 'dial: ${err}'
+		return
+	}
+	burst := 'GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\nGET /3 HTTP/1.1\r\nHost: x\r\n\r\n'
+	client.write(burst.bytes()) or { assert false, 'write: ${err}' }
+	mut pr := PipeReader{}
+	for want in ['ok:/1', 'ok:/2'] {
+		_, body := pr.next_response(mut client) or {
+			assert false, '${want}: ${err}'
+			return
+		}
+		assert body == want
+	}
+	if _, body := pr.next_response(mut client) {
+		assert false, 'served after close: ${body}'
+	}
+	client.close() or {}
+}

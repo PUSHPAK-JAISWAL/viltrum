@@ -535,6 +535,8 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 	mut tmp := []u8{len: opts.read_chunk_size}
 	mut assem := []u8{cap: opts.read_chunk_size}
 	mut write_buf := []u8{}
+	// pending — responses queued while more pipelined requests are already buffered.
+	mut pending := []u8{}
 	mut first := true
 	for {
 		if !first {
@@ -552,12 +554,12 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 				mut resp := http.Response.text(413, msg)
 				resp.set_connection_close()
 				apply_response_defaults(mut resp, opts)
-				c.write_all(resp.to_bytes()) or {}
+				flush_with(mut c, mut pending, resp.to_bytes()) or {}
 			} else if kind == 'protocol' {
 				mut resp := http.Response.bad_request(msg)
 				resp.set_connection_close()
 				apply_response_defaults(mut resp, opts)
-				c.write_all(resp.to_bytes()) or {}
+				flush_with(mut c, mut pending, resp.to_bytes()) or {}
 			}
 			return
 		}
@@ -569,7 +571,7 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 			mut resp := http.Response.bad_request(err.msg())
 			resp.set_connection_close()
 			apply_response_defaults(mut resp, opts)
-			c.write_all(resp.to_bytes()) or {}
+			flush_with(mut c, mut pending, resp.to_bytes()) or {}
 			return
 		}
 		unsafe {
@@ -582,7 +584,7 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 				mut resp := http.Response.bad_request('missing host header')
 				resp.set_connection_close()
 				apply_response_defaults(mut resp, opts)
-				c.write_all(resp.to_bytes()) or {}
+				flush_with(mut c, mut pending, resp.to_bytes()) or {}
 				return
 			}
 		}
@@ -591,7 +593,7 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 			mut resp := http.Response.text(413, 'payload too large')
 			resp.set_connection_close()
 			apply_response_defaults(mut resp, opts)
-			c.write_all(resp.to_bytes()) or {}
+			flush_with(mut c, mut pending, resp.to_bytes()) or {}
 			return
 		}
 
@@ -605,6 +607,7 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 				c.rbuf = leftover.clone()
 				leftover = []u8{}
 			}
+			flush_with(mut c, mut pending, []u8{}) or { return }
 			hijacked = true
 			// Long-lived streams (WS, custom protocols): use the longer of
 			// read_timeout and idle_timeout so quiet peers are not cut by the
@@ -630,7 +633,15 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 
 		// Serialize into conn-local write_buf (capacity retained across requests).
 		resp.to_bytes_for_method_into(mut write_buf, req.method)
-		c.write_all(write_buf) or { return }
+		// Pipelined: when the next request is already buffered, queue this response
+		// and answer the batch with one write. Anything else (incl. a partial next
+		// request that needs a socket read) flushes first, so a client never waits
+		// on responses we are holding.
+		if !close_after && pending.len < max_pending_bytes && has_complete_message(leftover) {
+			pending << write_buf
+		} else {
+			flush_with(mut c, mut pending, write_buf) or { return }
+		}
 		if close_after {
 			return
 		}
@@ -640,6 +651,33 @@ fn handle_conn(c_in Conn, handler Handler, upgrades []UpgradeRoute, opts ServerO
 		// underlying allocation and is truncated in place (cap retained).
 		recycle_assembly(mut assem)
 	}
+}
+
+const max_pending_bytes = 64 * 1024
+
+// flush_with writes queued pipelined responses followed by `last` in one write.
+fn flush_with(mut c Conn, mut pending []u8, last []u8) ! {
+	if pending.len == 0 {
+		if last.len > 0 {
+			c.write_all(last)!
+		}
+		return
+	}
+	pending << last
+	defer {
+		unsafe {
+			pending.len = 0
+		}
+	}
+	c.write_all(pending)!
+}
+
+// has_complete_message is true when buf already holds a full request (headers +
+// Content-Length body), i.e. the next read_message will not touch the socket.
+fn has_complete_message(buf []u8) bool {
+	hdr_end := index_of_double_crlf(buf) or { return false }
+	cl := content_length_from_headers(unsafe { buf[..hdr_end] }) or { 0 }
+	return buf.len >= hdr_end + 4 + cl
 }
 
 // apply_response_defaults sets optional Date / Server when enabled and not already present.

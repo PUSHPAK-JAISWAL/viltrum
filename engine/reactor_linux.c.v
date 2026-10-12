@@ -40,19 +40,23 @@ mut:
 	used      bool
 	fd        int
 	assem     []u8
+	read_off  int // start of unserved bytes in assem while draining
 	write_buf []u8
 	write_off int
 	writing   bool
+	out_armed bool // EPOLLOUT registered (short write pending)
 	close_me  bool // close after write drains
 }
 
 struct ReactorState {
 mut:
 	slots    []ReactorSlot
+	free     []int // reusable slot indexes (O(1) alloc at high conn counts)
 	fd_map   []int
 	n_conns  int
 	stats    &ConnStats = unsafe { nil }
 	upgrades []UpgradeRoute
+	resp_buf []u8 // loop-local serialize scratch
 }
 
 // serve_epoll_cores runs `cores` epoll loops. cores==1 is one listener.
@@ -108,7 +112,6 @@ fn reactor_run(mut listener net.TcpListener, handler Handler, upgrades []Upgrade
 		return
 	}
 	mut st := ReactorState{
-		slots:    []ReactorSlot{len: 256}
 		fd_map:   []int{len: reactor_fd_cap, init: -1}
 		n_conns:  0
 		upgrades: upgrades
@@ -137,7 +140,7 @@ fn reactor_run(mut listener net.TcpListener, handler Handler, upgrades []Upgrade
 				reactor_accept(epfd, lfd, mut st, max_conns) or { continue }
 				continue
 			}
-			if fd < 0 || fd >= reactor_fd_cap {
+			if fd < 0 || fd >= st.fd_map.len {
 				continue
 			}
 			si := st.fd_map[fd]
@@ -183,10 +186,8 @@ fn reactor_accept(epfd int, lfd int, mut st ReactorState, max_conns int) ! {
 				continue
 			}
 		}
-		if cfd >= reactor_fd_cap {
-			C.close(cfd)
-			st.release_conn()
-			continue
+		if cfd >= st.fd_map.len {
+			st.fd_map << []int{len: cfd + 1 - st.fd_map.len + reactor_fd_cap, init: -1}
 		}
 		flag := 1
 		C.setsockopt(cfd, C.IPPROTO_TCP, C.TCP_NODELAY, &flag, sizeof(int))
@@ -204,8 +205,10 @@ fn reactor_accept(epfd int, lfd int, mut st ReactorState, max_conns int) ! {
 		st.slots[si].fd = cfd
 		st.slots[si].assem = []u8{cap: 4096}
 		st.slots[si].write_buf = []u8{}
+		st.slots[si].read_off = 0
 		st.slots[si].write_off = 0
 		st.slots[si].writing = false
+		st.slots[si].out_armed = false
 		st.slots[si].close_me = false
 		st.fd_map[cfd] = si
 		st.n_conns++
@@ -221,13 +224,8 @@ fn reactor_accept(epfd int, lfd int, mut st ReactorState, max_conns int) ! {
 }
 
 fn reactor_alloc_slot(mut st ReactorState) ?int {
-	for i in 0 .. st.slots.len {
-		if !st.slots[i].used {
-			return i
-		}
-	}
-	if st.slots.len >= 8192 {
-		return none
+	if st.free.len > 0 {
+		return st.free.pop()
 	}
 	st.slots << ReactorSlot{}
 	return st.slots.len - 1
@@ -252,6 +250,7 @@ fn reactor_close_slot(epfd int, mut st ReactorState, si int) {
 	st.slots[si].write_off = 0
 	st.slots[si].writing = false
 	st.slots[si].close_me = false
+	st.free << si
 	if st.n_conns > 0 {
 		st.n_conns--
 	}
@@ -277,22 +276,31 @@ fn reactor_on_read(epfd int, mut st ReactorState, si int, mut tmp []u8, handler 
 			reactor_write_error(epfd, mut st, si, 413, 'payload too large')
 			return
 		}
-		for {
-			total := reactor_message_len(st.slots[si].assem) or { break }
-			msg := st.slots[si].assem[..total].clone()
-			if st.slots[si].assem.len > total {
-				st.slots[si].assem = st.slots[si].assem[total..].clone()
-			} else {
-				unsafe {
-					st.slots[si].assem.len = 0
-				}
-			}
+		// Serve every complete request in this read, queueing responses into
+		// write_buf, then answer the batch with one send (pipelined clients get
+		// N responses per syscall instead of N syscalls). Requests are views into
+		// assem; it is compacted once after the batch, not per message.
+		st.slots[si].read_off = 0
+		for !st.slots[si].close_me {
+			off := st.slots[si].read_off
+			total := reactor_message_len(unsafe { st.slots[si].assem[off..] }) or { break }
+			msg := unsafe { st.slots[si].assem[off..off + total] }
+			st.slots[si].read_off = off + total
 			if !reactor_serve_one(epfd, mut st, si, msg, handler, opts) {
 				return
 			}
-			if st.slots[si].writing {
-				return
+		}
+		off := st.slots[si].read_off
+		if off >= st.slots[si].assem.len {
+			unsafe {
+				st.slots[si].assem.len = 0
 			}
+		} else if off > 0 {
+			st.slots[si].assem = st.slots[si].assem[off..].clone()
+		}
+		reactor_flush(epfd, mut st, si)
+		if !st.slots[si].used || st.slots[si].writing {
+			return
 		}
 	}
 }
@@ -344,21 +352,36 @@ fn reactor_serve_one(epfd int, mut st ReactorState, si int, msg []u8, handler Ha
 		resp.headers.set_lowered('connection', 'keep-alive')
 	}
 	apply_response_defaults(mut resp, opts)
-	resp.to_bytes_for_method_into(mut st.slots[si].write_buf, req.method)
-	st.slots[si].write_off = 0
-	st.slots[si].writing = true
+	resp.to_bytes_for_method_into(mut st.resp_buf, req.method)
+	st.slots[si].write_buf << st.resp_buf
 	st.slots[si].close_me = close_after
-	reactor_on_write(epfd, mut st, si)
-	return st.slots[si].used
+	return true
 }
 
+// reactor_write_error queues a final error response behind any responses already
+// queued for earlier pipelined requests, then flushes and closes.
 fn reactor_write_error(epfd int, mut st ReactorState, si int, status int, msg string) {
 	mut resp := http.Response.text(status, msg)
 	resp.set_connection_close()
-	resp.to_bytes_for_method_into(mut st.slots[si].write_buf, 'GET')
+	resp.to_bytes_for_method_into(mut st.resp_buf, 'GET')
+	st.slots[si].write_buf << st.resp_buf
+	st.slots[si].close_me = true
+	reactor_flush(epfd, mut st, si)
+}
+
+// reactor_flush starts sending write_buf (no-op if empty or already in flight).
+fn reactor_flush(epfd int, mut st ReactorState, si int) {
+	if !st.slots[si].used || st.slots[si].writing {
+		return
+	}
+	if st.slots[si].write_buf.len == 0 {
+		if st.slots[si].close_me {
+			reactor_close_slot(epfd, mut st, si)
+		}
+		return
+	}
 	st.slots[si].write_off = 0
 	st.slots[si].writing = true
-	st.slots[si].close_me = true
 	reactor_on_write(epfd, mut st, si)
 }
 
@@ -373,10 +396,13 @@ fn reactor_on_write(epfd int, mut st ReactorState, si int) {
 		nw := unsafe { C.send(fd, ptr, left, C.MSG_NOSIGNAL) }
 		if nw < 0 {
 			if C.errno == C.EAGAIN || C.errno == C.EWOULDBLOCK {
-				mut ev := C.epoll_event{}
-				ev.events = u32(C.EPOLLIN | C.EPOLLOUT)
-				ev.data.fd = fd
-				C.epoll_ctl(epfd, C.EPOLL_CTL_MOD, fd, &ev)
+				if !st.slots[si].out_armed {
+					mut ev := C.epoll_event{}
+					ev.events = u32(C.EPOLLIN | C.EPOLLOUT)
+					ev.data.fd = fd
+					C.epoll_ctl(epfd, C.EPOLL_CTL_MOD, fd, &ev)
+					st.slots[si].out_armed = true
+				}
 				return
 			}
 			reactor_close_slot(epfd, mut st, si)
@@ -400,10 +426,15 @@ fn reactor_on_write(epfd int, mut st ReactorState, si int) {
 		reactor_close_slot(epfd, mut st, si)
 		return
 	}
-	mut ev := C.epoll_event{}
-	ev.events = u32(C.EPOLLIN)
-	ev.data.fd = fd
-	C.epoll_ctl(epfd, C.EPOLL_CTL_MOD, fd, &ev)
+	// Only re-register when a short write armed EPOLLOUT; the common full-write
+	// path costs no extra epoll_ctl.
+	if st.slots[si].out_armed {
+		mut ev := C.epoll_event{}
+		ev.events = u32(C.EPOLLIN)
+		ev.data.fd = fd
+		C.epoll_ctl(epfd, C.EPOLL_CTL_MOD, fd, &ev)
+		st.slots[si].out_armed = false
+	}
 }
 
 fn (mut st ReactorState) note_request() {
@@ -433,7 +464,10 @@ fn reactor_handoff(epfd int, mut st ReactorState, si int, req http.Request, hit 
 		return
 	}
 	fd := st.slots[si].fd
-	leftover := st.slots[si].assem.clone()
+	// Bytes after the upgrade request (early protocol data) and responses still
+	// queued for earlier pipelined requests in this batch.
+	leftover := st.slots[si].assem[st.slots[si].read_off..].clone()
+	pending := st.slots[si].write_buf.clone()
 	mut ev := C.epoll_event{}
 	C.epoll_ctl(epfd, C.EPOLL_CTL_DEL, fd, &ev)
 	if fd >= 0 && fd < st.fd_map.len {
@@ -445,7 +479,9 @@ fn reactor_handoff(epfd int, mut st ReactorState, si int, req http.Request, hit 
 	st.slots[si].write_buf = []u8{}
 	st.slots[si].write_off = 0
 	st.slots[si].writing = false
+	st.slots[si].out_armed = false
 	st.slots[si].close_me = false
+	st.free << si
 	if st.n_conns > 0 {
 		st.n_conns--
 	}
@@ -463,7 +499,14 @@ fn reactor_handoff(epfd int, mut st ReactorState, si int, req http.Request, hit 
 		read_timeout:   upgrade_read_timeout(opts)
 		write_timeout:  opts.write_timeout
 	}
-	c := Conn.wrap(mut tcp, leftover)
+	mut c := Conn.wrap(mut tcp, leftover)
+	if pending.len > 0 {
+		c.write_all(pending) or {
+			c.close() or {}
+			st.release_conn()
+			return
+		}
+	}
 	mut rq := req
 	rq.params = hit.params.clone()
 	spawn run_handed_upgrade(c, hit.handler, rq, st.stats)
