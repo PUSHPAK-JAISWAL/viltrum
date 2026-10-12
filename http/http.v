@@ -406,13 +406,27 @@ pub fn parse_request(raw []u8) !Request {
 			method, target, version = parse_request_line(line)!
 		} else if line.len > 0 {
 			colon := index_byte(line, `:`) or { return error('bad header line') }
-			name := trim_ows(line[..colon])
+			// Strict on purpose: `Name :`, obs-fold, bare CR/LF, and duplicate framing
+			// headers are where a front proxy and we could disagree (request smuggling).
+			name := line[..colon]
 			if name.len == 0 {
 				return error('empty header name')
 			}
+			if !is_token(name) {
+				return error('bad header name')
+			}
 			value := trim_ows(line[colon + 1..])
+			if has_ctl(value) {
+				return error('bad header value')
+			}
 			// Lowercase field name while materializing; value kept as wire octets → string.
-			headers.add_lowered(bytes_to_lower_str(name), value.bytestr())
+			key := bytes_to_lower_str(name)
+			if key == 'content-length' || key == 'host' {
+				if _ := headers.get_lowered(key) {
+					return error('duplicate ${key}')
+				}
+			}
+			headers.add_lowered(key, value.bytestr())
 		}
 
 		line_idx++
@@ -429,8 +443,8 @@ pub fn parse_request(raw []u8) !Request {
 	// TE + Content-Length together is invalid (RFC 9112). TE alone (e.g. chunked) is unsupported.
 	// Keys already lower in the map — no to_lower on lookup.
 	te := headers.get_lowered('transfer-encoding') or { '' }
-	cl_hdr := headers.get_lowered('content-length') or { '' }
-	if te.len > 0 && cl_hdr.len > 0 {
+	cl_hdr := headers.get_lowered('content-length')
+	if te.len > 0 && cl_hdr != none {
 		return error('transfer-encoding and content-length conflict')
 	}
 	if te.len > 0 {
@@ -438,11 +452,8 @@ pub fn parse_request(raw []u8) !Request {
 	}
 
 	mut body := []u8{}
-	if cl_hdr.len > 0 {
-		n := cl_hdr.int()
-		if n < 0 {
-			return error('negative content-length')
-		}
+	if cl := cl_hdr {
+		n := parse_content_length(cl) or { return error('bad content-length') }
 		available := raw.len - body_start
 		if available < n {
 			return error('incomplete body')
@@ -473,6 +484,9 @@ fn parse_request_line(line []u8) !(string, string, string) {
 	mut sp1 := -1
 	mut sp2 := -1
 	for k in 0 .. line.len {
+		if line[k] < 0x20 || line[k] == 0x7f {
+			return error('bad request line')
+		}
 		if line[k] != ` ` {
 			continue
 		}
@@ -522,6 +536,45 @@ fn index_of_double_crlf(buf []u8) ?int {
 		}
 	}
 	return none
+}
+
+// parse_content_length accepts 1*DIGIT only (RFC 9112 §6.3): no sign, list, or overflow.
+fn parse_content_length(s string) ?int {
+	if s.len == 0 || s.len > 10 {
+		return none
+	}
+	mut n := i64(0)
+	for c in s {
+		if c < `0` || c > `9` {
+			return none
+		}
+		n = n * 10 + i64(c - `0`)
+	}
+	if n > max_i32 {
+		return none
+	}
+	return int(n)
+}
+
+// is_token reports whether buf is a non-empty RFC 9110 token (tchar+).
+fn is_token(buf []u8) bool {
+	for c in buf {
+		if !(c.is_alnum()
+			|| c in [`!`, `#`, `$`, `%`, `&`, `'`, `*`, `+`, `-`, `.`, `^`, `_`, `\``, `|`, `~`]) {
+			return false
+		}
+	}
+	return buf.len > 0
+}
+
+// has_ctl is true for control octets other than HTAB (incl. bare CR/LF, NUL, DEL).
+fn has_ctl(buf []u8) bool {
+	for c in buf {
+		if (c < 0x20 && c != `\t`) || c == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 fn index_byte(buf []u8, b u8) ?int {

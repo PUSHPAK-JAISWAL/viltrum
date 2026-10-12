@@ -28,6 +28,9 @@ jobs:
           v test ws/
           v test tests/recover_test.v
 
+      - name: Parser fuzz (500k mutations)
+        run: VILTRUM_FUZZ_ITERS=500000 v test http/fuzz_test.v
+
       - name: Build examples
         run: |
           v -o /tmp/viltrum-hello examples/hello

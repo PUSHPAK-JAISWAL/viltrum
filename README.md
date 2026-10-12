@@ -105,7 +105,7 @@ app.upgrade('GET', '/echo', fn (mut c Conn, req Request) {
 | HTTP/1.1 | Keep-alive, Host check, body size limits, optional Date/Server |
 | Router | `:param`, trailing `*wildcard`, HEAD falls back to GET |
 | App | `mount`, `chain`, cors, static files, logger, recover |
-| Bodies | `Content-Length` only. Chunked / TE → **400** (no desync games) |
+| Bodies | `Content-Length` only. Chunked / TE, duplicate or non-digit CL, `Name :`, obs-fold, bare CR/LF → **400** (no desync games; parser is fuzzed in CI) |
 | Upgrade | One path: `app.upgrade` + `Conn` |
 | WebSocket | `app.ws` on that path (`ws://`) |
 

@@ -178,7 +178,8 @@ fn sanitize_filename(raw string) ?string {
 }
 
 fn multipart_boundary(content_type string) ?string {
-	lower := content_type.to_lower()
+	// ASCII-only fold keeps byte offsets aligned with content_type (to_lower may not).
+	lower := bytes_to_lower_str(content_type.bytes())
 	key := 'boundary='
 	idx := lower.index(key) or { return none }
 	mut raw := content_type[idx + key.len..].trim_space()
@@ -214,8 +215,8 @@ fn header_line_value(hdr string, name_lower string) string {
 
 fn disp_param(line string, key string) string {
 	needle := '${key}='
-	// case-insensitive search
-	lower := line.to_lower()
+	// case-insensitive search; ASCII fold keeps offsets valid for `line`
+	lower := bytes_to_lower_str(line.bytes())
 	idx := lower.index(needle) or { return '' }
 	mut raw := line[idx + needle.len..].trim_space()
 	if raw.starts_with('"') {
