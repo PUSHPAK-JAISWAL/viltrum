@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.12.2](https://github.com/Tuntii/viltrum/compare/v0.12.1...v0.12.2) (2026-10-12)
+
+### Bug Fixes
+
+* **http:** reject ambiguous framing; fix multipart panic on non-ASCII content-type ([ad9e396](https://github.com/Tuntii/viltrum/commit/ad9e396d8c14295c9e453b91e6d01ad1c312d7a1))
+
 ## [0.12.1](https://github.com/Tuntii/viltrum/compare/v0.12.0...v0.12.1) (2026-09-25)
 
 ### Bug Fixes
