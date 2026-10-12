@@ -31,6 +31,7 @@ vls.log
 !/benches/compare/RUNTIME.md
 !/benches/compare/SCHEDULER.md
 !/benches/compare/CORES.md
+!/benches/compare/PIPELINE.md
 !/benches/compare/run_vs_axum.sh
 !/benches/compare/run_reuseport_exp.sh
 !/benches/compare/run_conn_pool_exp.sh

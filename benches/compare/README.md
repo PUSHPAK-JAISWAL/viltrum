@@ -35,6 +35,9 @@ bash benches/compare/run_sched_exp.sh
 # Multi-core epoll vs the SO_RCVTIMEO spawn path (measured 2026-09-25)
 bash benches/compare/run_hotpath_exp.sh
 # see CORES.md — epoll_cores=16 E +0.3% with recover; default stays spawn
+
+# Pipelined response batching + serialize hot path (measured 2026-10-12, wrk depth 16)
+# see PIPELINE.md — epoll plaintext 25.1k → 119.8k on the same VM; default stays spawn
 ```
 
 Needs: `v`, `cargo`, `oha`, `curl`.
