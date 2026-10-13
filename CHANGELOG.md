@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/Tuntii/viltrum/compare/v0.12.3...v0.13.0) (2026-10-13)
+
+### Features
+
+* gzip response middleware ([0077f8a](https://github.com/Tuntii/viltrum/commit/0077f8abed2e534575b66dfcba92a164761efb4d))
+* **http:** accept chunked request bodies ([251ad3c](https://github.com/Tuntii/viltrum/commit/251ad3c52ecb00a4cfc096cf6e74d96b105e53c8))
+
 ## [0.12.3](https://github.com/Tuntii/viltrum/compare/v0.12.2...v0.12.3) (2026-10-13)
 
 ### Bug Fixes
