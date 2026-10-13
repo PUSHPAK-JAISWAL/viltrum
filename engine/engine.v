@@ -294,7 +294,7 @@ pub fn listen_and_serve_full(addr string, handler Handler, upgrades []UpgradeRou
 	pool := start_conn_pool(opts.conn_workers, handler, upgrades, opts, stats)
 
 	if workers == 1 {
-		mut listener := net.listen_tcp(.ip, addr)!
+		mut listener := net.listen_tcp(.ip, addr, backlog: listen_backlog)!
 		if opts.listen_break != unsafe { nil } {
 			unsafe {
 				opts.listen_break.tcp = listener
@@ -390,6 +390,10 @@ fn normalize_accept_workers(n int) int {
 
 // listen_tcp_reuseport binds with SO_REUSEPORT so multiple listeners can share addr.
 // Linux only (caller must gate via normalize_accept_workers).
+// Kernel clamps to net.core.somaxconn. 128 overflowed the SYN queue under
+// connection bursts (client retries after 1s, wrk counts timeouts).
+const listen_backlog = 4096
+
 fn listen_tcp_reuseport(addr string) !&net.TcpListener {
 	mut s := net.new_tcp_socket(.ip)!
 	// new_tcp_socket already sets SO_REUSEADDR; add SO_REUSEPORT before bind.
@@ -399,7 +403,7 @@ fn listen_tcp_reuseport(addr string) !&net.TcpListener {
 		return error('SO_REUSEPORT setsockopt failed')
 	}
 	s.bind(addr)!
-	res := C.listen(s.handle, 128)
+	res := C.listen(s.handle, listen_backlog)
 	if res != 0 {
 		return error('listen failed after SO_REUSEPORT bind')
 	}
