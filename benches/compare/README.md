@@ -38,6 +38,7 @@ bash benches/compare/run_hotpath_exp.sh
 
 # Pipelined response batching + serialize hot path (measured 2026-10-12, wrk depth 16)
 # see PIPELINE.md — epoll plaintext 25.1k → 119.8k on the same VM; default stays spawn
+# 2026-10-13 in PIPELINE.md: vs veb (TFB's V entry) and the c=16384 timeout analysis
 ```
 
 Needs: `v`, `cargo`, `oha`, `curl`.

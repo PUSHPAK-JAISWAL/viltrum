@@ -38,5 +38,25 @@ The table above is (1)+(2) only. Adding (3), A/B in a second session:
 
 Axum on the same host: json c=64 19.5k, c=256 18.1k. Default I/O is unchanged (spawn); `epoll_cores` is still opt-in.
 
+## c=16384 "timeouts" and veb (measured 2026-10-13)
+
+Same host and pinning. veb is the TFB `frameworks/V/veb` app with the DB tests removed, run like its `run.sh`
+(one pinned process per core, 4 here). veb from V 0.5.2 answers only the first request of a pipelined batch, so
+the veb column uses V dev `c1bd176`, which is what TFB builds (`thevlang/vlang:debian-dev`).
+
+| Point | viltrum epoll_cores=4 | veb (V dev) | Axum |
+|-------|----------------------:|------------:|-----:|
+| plaintext c=256 | 106.5k | 34.0k | 82.8k |
+| plaintext c=1024 | 104.4k | 31.5k | 75.3k |
+| plaintext c=4096 | 98.4k | 28.0k | 64.0k |
+| plaintext c=16384 | 56.3k | 20.9k | 25.0k |
+| plaintext c=16384, `--timeout 10s` | 54.4k, p99 3.20 s, 0 timeouts | 8.6k, p99 6.03 s | 27.1k, p99 6.81 s |
+| json c=256 | 18.9k | 12.0k | 18.2k |
+
+At c=16384 × depth 16 there are ~262k requests in flight. At ~55k req/s that is ~4.7 s of queueing per batch on
+4 cores, so wrk's default 2 s timeout fires on the queue, not on dropped connections: with `--timeout 10s` the
+timeouts are gone. The listen backlog is now 4096 (was 128; Tokio uses 1024). On this host that changed nothing
+measurable for epoll. On spawn, one run went from 2073 timeouts to 124.
+
 Tests: `engine/pipeline_test.v` covers deep bursts, POST/GET mixes, a bad request mid-burst, and `Connection: close`
 mid-burst on both I/O paths.
