@@ -4,6 +4,7 @@ module viltrum
 // v0.4: connection hijack / upgrade on engine.Conn.
 // v0.5: first-party WebSocket via app.ws on the same Conn path.
 // v0.6: in-process HTTPS / WSS via app.listen_tls (mbedtls).
+import compress.gzip as compress_gzip
 import time
 import viltrum.engine
 import viltrum.http
@@ -400,6 +401,67 @@ pub fn cors(allow_origin string) Middleware {
 			return resp
 		}
 	}
+}
+
+const gzip_min_bytes = 256 // below this the gzip framing costs more than it saves
+
+// gzip compresses text and JSON responses for clients that accept gzip. Bodies
+// under 256 bytes, already-encoded bodies, and other content types pass through.
+pub fn gzip(next Handler) Handler {
+	return fn [next] (req http.Request) http.Response {
+		mut resp := next(req)
+		if resp.body.len < gzip_min_bytes || resp.status < 200 || resp.status == 204
+			|| resp.status == 304 {
+			return resp
+		}
+		if resp.headers.get_or_lowered('content-encoding', '') != ''
+			|| !compressible(resp.headers.get_or_lowered('content-type', '')) {
+			return resp
+		}
+		resp.headers.add_lowered('vary', 'Accept-Encoding')
+		if !accepts_gzip(req.headers.get_or_lowered('accept-encoding', '')) {
+			return resp
+		}
+		packed := compress_gzip.compress(resp.body) or { return resp }
+		if packed.len >= resp.body.len {
+			return resp
+		}
+		resp.body = packed
+		resp.headers.set_lowered('content-encoding', 'gzip')
+		resp.headers.set_lowered('content-length', '${packed.len}')
+		return resp
+	}
+}
+
+fn compressible(content_type string) bool {
+	ct := content_type.to_lower()
+	return ct.starts_with('text/') || ct.contains('json') || ct.contains('javascript')
+		|| ct.contains('xml') || ct.contains('svg')
+}
+
+// accepts_gzip reads an Accept-Encoding list. An explicit gzip entry wins over *;
+// either counts only with a q-value above 0.
+fn accepts_gzip(accept_encoding string) bool {
+	mut star := false
+	for part in accept_encoding.split(',') {
+		fields := part.split(';')
+		coding := fields[0].trim_space().to_lower()
+		if coding != 'gzip' && coding != '*' {
+			continue
+		}
+		mut q := 1.0
+		for f in fields[1..] {
+			kv := f.trim_space().to_lower()
+			if kv.starts_with('q=') {
+				q = kv[2..].f64()
+			}
+		}
+		if coding == 'gzip' {
+			return q > 0
+		}
+		star = q > 0
+	}
+	return star
 }
 
 pub fn static_files(url_prefix string, root string) Middleware {
