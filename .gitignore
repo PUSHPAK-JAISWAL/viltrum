@@ -21,6 +21,7 @@ vls.log
 !/benches/ws_load_client.v
 !/benches/RESULTS.md
 !/benches/HTTP_PROFILE.md
+!/benches/tfb/
 # Side-by-side vs Axum (source only; not target/)
 !/benches/compare/
 /benches/compare/**
