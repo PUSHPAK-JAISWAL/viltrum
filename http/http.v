@@ -4,14 +4,31 @@ module http
 
 import time
 
+struct HeaderField {
+	key   string
+	value string
+}
+
+// HeaderMap is the field lines in arrival order, keys lowercased. Requests carry
+// a handful of fields, so a linear scan beats hashing and costs one allocation
+// instead of a map's two. add never scans, so parsing stays O(n) however many
+// fields a client sends.
 pub struct HeaderMap {
 mut:
-	values map[string]string
+	fields []HeaderField
 }
 
 pub fn HeaderMap.new() HeaderMap {
-	return HeaderMap{
-		values: map[string]string{}
+	return HeaderMap{}
+}
+
+fn (mut h HeaderMap) push(key string, value string) {
+	if h.fields.cap == 0 {
+		h.fields = []HeaderField{cap: 8}
+	}
+	h.fields << HeaderField{
+		key:   key
+		value: value
 	}
 }
 
@@ -19,24 +36,42 @@ pub fn (mut h HeaderMap) set(name string, value string) {
 	h.set_lowered(name.to_lower(), value)
 }
 
-// set_lowered stores under a key that is already lowercased (no to_lower).
-// Hot path for known headers and parse results.
+// set_lowered replaces every field line for a key that is already lowercased.
 pub fn (mut h HeaderMap) set_lowered(key string, value string) {
-	h.values[key] = value
+	mut n := 0
+	mut found := false
+	for i in 0 .. h.fields.len {
+		if h.fields[i].key == key {
+			if found {
+				continue
+			}
+			found = true
+			h.fields[n] = HeaderField{
+				key:   key
+				value: value
+			}
+		} else if n != i {
+			h.fields[n] = h.fields[i]
+		}
+		n++
+	}
+	if !found {
+		h.push(key, value)
+		return
+	}
+	unsafe {
+		h.fields.len = n
+	}
 }
 
-// add appends with comma if the header already exists (RFC 7230 combine).
+// add appends a field line; get joins repeated lines with ', ' (RFC 9110 §5.3).
 pub fn (mut h HeaderMap) add(name string, value string) {
 	h.add_lowered(name.to_lower(), value)
 }
 
 // add_lowered is add for an already-lowercased key.
 pub fn (mut h HeaderMap) add_lowered(key string, value string) {
-	if key in h.values {
-		h.values[key] = h.values[key] + ', ' + value
-	} else {
-		h.values[key] = value
-	}
+	h.push(key, value)
 }
 
 pub fn (h &HeaderMap) get(name string) ?string {
@@ -45,10 +80,29 @@ pub fn (h &HeaderMap) get(name string) ?string {
 
 // get_lowered looks up a key that is already lowercased (no to_lower alloc).
 pub fn (h &HeaderMap) get_lowered(key string) ?string {
-	if key in h.values {
-		return h.values[key]
+	mut idx := -1
+	for i in 0 .. h.fields.len {
+		if h.fields[i].key == key {
+			if idx >= 0 {
+				return h.join_lowered(key)
+			}
+			idx = i
+		}
 	}
-	return none
+	if idx < 0 {
+		return none
+	}
+	return h.fields[idx].value
+}
+
+fn (h &HeaderMap) join_lowered(key string) string {
+	mut parts := []string{}
+	for f in h.fields {
+		if f.key == key {
+			parts << f.value
+		}
+	}
+	return parts.join(', ')
 }
 
 pub fn (h &HeaderMap) get_or(name string, default_value string) string {
@@ -309,9 +363,9 @@ pub fn (r &Response) to_bytes_for_method_into(mut out []u8, method string) {
 
 	// Capacity: status line + each "Name: value\r\n" + final CRLF + optional body.
 	mut need := 16 + r.reason.len // "HTTP/1.1 NNN " + reason + CRLF (status ≤ 3–4 digits)
-	for k, v in r.headers.values {
+	for f in r.headers.fields {
 		// Wire name ≤ slightly larger than lowercased key; +4 for ": \r\n"
-		need += k.len + 8 + v.len + 4
+		need += f.key.len + 8 + f.value.len + 4
 	}
 	need += 2
 	if include_body {
@@ -333,11 +387,11 @@ pub fn (r &Response) to_bytes_for_method_into(mut out []u8, method string) {
 	out << `\r`
 	out << `\n`
 
-	for k, v in r.headers.values {
-		append_wire_header_name(mut out, k)
+	for f in r.headers.fields {
+		append_wire_header_name(mut out, f.key)
 		out << `:`
 		out << ` `
-		append_str(mut out, v)
+		append_str(mut out, f.value)
 		out << `\r`
 		out << `\n`
 	}
@@ -362,6 +416,11 @@ pub fn should_close(req Request, resp Response) bool {
 		return !eq_ascii_ci(req_conn, 'keep-alive')
 	}
 	return false
+}
+
+// has_prefix_ci is true when s starts with lower (ASCII lowercased literal) ignoring case.
+fn has_prefix_ci(s string, lower string) bool {
+	return s.len >= lower.len && eq_ascii_ci(s[..lower.len], lower)
 }
 
 // eq_ascii_ci is true when s matches lower (ASCII lowercased literal) ignoring case.
@@ -621,6 +680,9 @@ pub fn normalize_path(path string) string {
 	if path.len <= 1 {
 		return if path.len == 0 { '/' } else { path }
 	}
+	if path[path.len - 1] != `/` {
+		return path // trim_right would copy an unchanged path
+	}
 	return path.trim_right('/')
 }
 
@@ -632,8 +694,7 @@ fn split_target(target string) (string, string) {
 		return '*', ''
 	}
 	mut t := target
-	lower := t.to_lower()
-	if lower.starts_with('http://') || lower.starts_with('https://') {
+	if t.len > 0 && t[0] != `/` && (has_prefix_ci(t, 'http://') || has_prefix_ci(t, 'https://')) {
 		// strip scheme://
 		scheme_end := t.index('://') or { 0 }
 		rest := t[scheme_end + 3..]

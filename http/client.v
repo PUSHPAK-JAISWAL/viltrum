@@ -186,7 +186,8 @@ fn serialize_request(req Request, addr string) []u8 {
 	mut saw_host := false
 	mut saw_conn := false
 	mut saw_cl := false
-	for k, v in req.headers.values {
+	for f in req.headers.fields {
+		k, v := f.key, f.value
 		if k == 'host' {
 			saw_host = true
 		}

@@ -546,3 +546,39 @@ fn test_bytes_to_lower_str() {
 	assert bytes_to_lower_str('Host'.bytes()) == 'host'
 	assert bytes_to_lower_str('CONTENT-LENGTH'.bytes()) == 'content-length'
 }
+
+fn test_header_map_repeated_lines() {
+	mut h := HeaderMap.new()
+	h.add_lowered('x', '1')
+	h.add_lowered('y', '2')
+	h.add_lowered('x', '3')
+	assert h.get_lowered('x')? == '1, 3'
+	h.set_lowered('x', '9')
+	assert h.get_lowered('x')? == '9'
+	assert h.get_lowered('y')? == '2'
+	assert h.fields.len == 2
+	if _ := h.get_lowered('z') {
+		assert false
+	}
+	mut r := Response.text(200, 'ok')
+	r.headers.add('Set-Cookie', 'a=1')
+	r.headers.add('Set-Cookie', 'b=2')
+	wire := r.to_bytes().bytestr()
+	assert wire.contains('Set-Cookie: a=1\r\nSet-Cookie: b=2\r\n')
+}
+
+fn test_parse_many_headers_is_linear() {
+	mut raw := 'GET / HTTP/1.1\r\nHost: x\r\n'
+	for i in 0 .. 5000 {
+		raw += 'a${i % 7}: v\r\n'
+	}
+	raw += '\r\n'
+	sw := time.new_stopwatch()
+	req := parse_request(raw.bytes()) or {
+		assert false, err.msg()
+		return
+	}
+	assert req.headers.fields.len == 5001
+	assert req.headers.get('a3')?.starts_with('v, v')
+	assert sw.elapsed().milliseconds() < 500
+}
