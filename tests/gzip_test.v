@@ -54,3 +54,17 @@ fn test_gzip_passes_through() {
 	star := gzip_handler(gzip_json, 'text/plain; charset=utf-8')(gzip_req('*'))
 	assert star.headers.get('content-encoding')? == 'gzip'
 }
+
+// A body far past one deflate block must still round-trip through a
+// standard decoder (CRC and size trailer included).
+fn test_gzip_large_body_round_trips() {
+	mut sb := []string{}
+	for i in 0 .. 20000 {
+		sb << '{"id":${i},"v":"${i * 7919 % 1000}"}'
+	}
+	body := '[' + sb.join(',') + ']'
+	resp := gzip_handler(body, 'application/json')(gzip_req('gzip'))
+	assert resp.headers.get('content-encoding')? == 'gzip'
+	assert resp.body.len < body.len / 3
+	assert gzip.decompress(resp.body)!.bytestr() == body
+}

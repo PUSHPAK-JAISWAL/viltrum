@@ -4,7 +4,6 @@ module viltrum
 // v0.4: connection hijack / upgrade on engine.Conn.
 // v0.5: first-party WebSocket via app.ws on the same Conn path.
 // v0.6: in-process HTTPS / WSS via app.listen_tls (mbedtls).
-import compress.gzip as compress_gzip
 import time
 import viltrum.engine
 import viltrum.http
@@ -422,7 +421,7 @@ pub fn gzip(next Handler) Handler {
 		if !accepts_gzip(req.headers.get_or_lowered('accept-encoding', '')) {
 			return resp
 		}
-		packed := compress_gzip.compress(resp.body) or { return resp }
+		packed := gzip_bytes(resp.body) or { return resp }
 		if packed.len >= resp.body.len {
 			return resp
 		}
