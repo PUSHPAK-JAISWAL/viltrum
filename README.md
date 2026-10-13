@@ -126,7 +126,9 @@ v0.12.1, `-prod`, this developer machine (Ryzen 7 4800H). Three-run median, 2026
 TFB-shaped pipelined plaintext (wrk, depth 16, c=256, `epoll_cores: 4`) on an older 2013 Xeon VM, 2026-10-13:
 ~141k req/s. On the same run, V's veb did ~33k and Axum ~71k. Single runs; Axum varied 71–83k across runs.
 See [benches/compare/PIPELINE.md](benches/compare/PIPELINE.md).
-The TechEmpower entry lives in [benches/tfb](benches/tfb).
+TechEmpower was archived in March 2026; the [HttpArena](https://www.http-arena.com/) entry lives in
+[benches/httparena](benches/httparena) and passes its `validate.sh` (baseline incl. byte-offset fragmentation and
+chunked bodies, pipelined, json-comp, echo-ws).
 
 ```bash
 bash benches/run.sh
