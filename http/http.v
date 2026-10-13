@@ -499,19 +499,26 @@ pub fn parse_request(raw []u8) !Request {
 	// OPTIONS * keeps asterisk path; absolute-form is reduced in split_target
 	path := if path_raw == '*' { '*' } else { normalize_path(path_raw) }
 
-	// TE + Content-Length together is invalid (RFC 9112). TE alone (e.g. chunked) is unsupported.
+	// TE + Content-Length together is invalid (RFC 9112).
 	// Keys already lower in the map — no to_lower on lookup.
 	te := headers.get_lowered('transfer-encoding') or { '' }
 	cl_hdr := headers.get_lowered('content-length')
 	if te.len > 0 && cl_hdr != none {
 		return error('transfer-encoding and content-length conflict')
 	}
-	if te.len > 0 {
-		return error('transfer-encoding not supported')
-	}
 
 	mut body := []u8{}
-	if cl := cl_hdr {
+	if te.len > 0 {
+		// Only a lone `chunked` on HTTP/1.1; anything else could frame differently
+		// in a front proxy (request smuggling), so it is refused.
+		if !is_chunked(te) || version != 'HTTP/1.1' {
+			return error('transfer-encoding not supported')
+		}
+		mut st := ChunkScan.new(body_start)
+		if !scan_chunked(raw, mut st, max_i32, true, mut body)! {
+			return error('incomplete body')
+		}
+	} else if cl := cl_hdr {
 		n := parse_content_length(cl) or { return error('bad content-length') }
 		available := raw.len - body_start
 		if available < n {

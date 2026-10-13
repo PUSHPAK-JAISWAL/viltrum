@@ -315,13 +315,13 @@ fn test_json_i64_large_id() {
 
 // --- v0.3.x correctness ---
 
-fn test_reject_transfer_encoding_chunked() {
+fn test_chunked_empty_body() {
 	raw := 'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n'.bytes()
-	parse_request(raw) or {
-		assert err.msg().contains('transfer-encoding')
+	req := parse_request(raw) or {
+		assert false, err.msg()
 		return
 	}
-	assert false, 'expected transfer-encoding rejection'
+	assert req.body.len == 0
 }
 
 fn test_reject_transfer_encoding_and_content_length_conflict() {

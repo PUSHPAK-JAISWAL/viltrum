@@ -85,7 +85,7 @@ Rules:
 The upgrade decision runs **after** a full HTTP message read:
 
 - Body is present on `req.body` when `Content-Length` was set (same as normal requests).
-- `Transfer-Encoding` remains unsupported; TE+`Content-Length` → **400 conflict**.
+- Only `Transfer-Encoding: chunked` is accepted; TE+`Content-Length` → **400 conflict**.
 
 For typical upgrades (`GET` with no body), `req.body` is empty and pushback is only post-message bytes.
 

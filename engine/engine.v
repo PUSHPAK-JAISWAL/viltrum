@@ -680,7 +680,13 @@ fn flush_with(mut c Conn, mut pending []u8, last []u8) ! {
 // Content-Length body), i.e. the next read_message will not touch the socket.
 fn has_complete_message(buf []u8) bool {
 	hdr_end := index_of_double_crlf(buf) or { return false }
-	cl := content_length_from_headers(unsafe { buf[..hdr_end] }) or { 0 }
+	hdr := unsafe { buf[..hdr_end] }
+	if transfer_encoding_present(hdr) {
+		mut st := http.ChunkScan.new(hdr_end + 4)
+		mut sink := []u8{}
+		return http.scan_chunked(buf, mut st, max_i32, false, mut sink) or { false }
+	}
+	cl := content_length_from_headers(hdr) or { 0 }
 	return buf.len >= hdr_end + 4 + cl
 }
 
@@ -749,14 +755,14 @@ fn read_message(mut c Conn, mut leftover []u8, mut tmp []u8, mut assem []u8, opt
 			body_start := hdr_end + 4
 			hdr := unsafe { assem[..hdr_end] }
 
-			// TE + CL together is a protocol error (RFC 9112); reject before TE-not-supported.
+			// TE + CL together is a protocol error (RFC 9112).
 			te := transfer_encoding_present(hdr)
 			cl_opt := content_length_from_headers(hdr)
 			if te && cl_opt != none {
 				return error('transfer-encoding and content-length conflict')
 			}
 			if te {
-				return error('transfer-encoding not supported')
+				return read_chunked(mut c, mut leftover, mut tmp, mut assem, body_start, opts)
 			}
 
 			cl := cl_opt or { return finish_message(mut leftover, assem, body_start, 0) }
@@ -811,6 +817,42 @@ fn read_message(mut c Conn, mut leftover []u8, mut tmp []u8, mut assem []u8, opt
 		assem << tmp[..n]
 	}
 	return error('unreachable')
+}
+
+// read_chunked reads until the chunked body that starts at body_start is complete
+// and returns the framed message (chunk syntax intact; parse_request decodes it).
+fn read_chunked(mut c Conn, mut leftover []u8, mut tmp []u8, mut assem []u8, body_start int, opts ServerOptions) ![]u8 {
+	hdr := unsafe { assem[..body_start - 4] }
+	if !chunked_te(hdr) {
+		return error('transfer-encoding not supported')
+	}
+	c.set_read_timeout(opts.read_timeout)
+	mut st := http.ChunkScan.new(body_start)
+	mut sink := []u8{}
+	mut done := http.scan_chunked(assem, mut st, opts.max_body_bytes, false, mut sink)!
+	if !done && expects_100_continue(hdr) {
+		c.write_all('HTTP/1.1 100 Continue\r\n\r\n'.bytes()) or {
+			return error('write 100-continue failed')
+		}
+	}
+	for !done {
+		n := c.read(mut tmp) or { return err }
+		if n <= 0 {
+			return error('eof during body')
+		}
+		assem << tmp[..n]
+		if assem.len > opts.max_header_bytes + opts.max_body_bytes {
+			return error('message too large')
+		}
+		done = http.scan_chunked(assem, mut st, opts.max_body_bytes, false, mut sink)!
+	}
+	return finish_message(mut leftover, assem, st.pos, 0)
+}
+
+// chunked_te is true when the first Transfer-Encoding field is exactly `chunked`.
+fn chunked_te(hdr []u8) bool {
+	val := header_value_ci(hdr, 'transfer-encoding') or { return false }
+	return http.is_chunked(val.bytestr())
 }
 
 // seed_assembly copies `src` into assem, reusing capacity when possible.

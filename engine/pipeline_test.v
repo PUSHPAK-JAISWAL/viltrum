@@ -455,3 +455,60 @@ fn test_pipeline_close_mid_burst_epoll() {
 	}
 	client.close() or {}
 }
+
+// Chunked request bodies on both I/O paths: pipelined between other requests,
+// trickled one byte per write, and the framing errors that must close.
+fn test_chunked_bodies_both_paths() {
+	chunked := 'POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n4;e=1\r\nWiki\r\n5\r\npedia\r\n0\r\nX-T: 1\r\n\r\n'
+	for epoll in [false, true] {
+		addr := pipeline_free_addr()
+		start_pipeline_server_mode(addr, epoll)
+		mut client := pipeline_dial(addr) or {
+			assert false, 'dial: ${err}'
+			return
+		}
+		mut pr := PipeReader{}
+		burst := chunked + 'GET /mid HTTP/1.1\r\nHost: x\r\n\r\n' + chunked
+		client.write(burst.bytes()) or { assert false, 'write: ${err}' }
+		for want in ['echo:Wikipedia', 'ok:/mid', 'echo:Wikipedia'] {
+			st, body := pr.next_response(mut client) or {
+				assert false, 'epoll=${epoll} ${want}: ${err}'
+				return
+			}
+			assert st == 200 && body == want, 'epoll=${epoll}: ${st} ${body}'
+		}
+		for b in chunked.bytes() {
+			client.write([b]) or { assert false, 'trickle: ${err}' }
+			time.sleep(time.millisecond)
+		}
+		st, body := pr.next_response(mut client) or {
+			assert false, 'epoll=${epoll} trickle: ${err}'
+			return
+		}
+		assert st == 200 && body == 'echo:Wikipedia', 'epoll=${epoll} trickle: ${body}'
+		client.close() or {}
+
+		bad := {
+			'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n0\r\n\r\n': 400
+			'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n':                         400
+			'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n':                         400
+		}
+		for raw, want in bad {
+			mut c2 := pipeline_dial(addr) or {
+				assert false, 'dial: ${err}'
+				return
+			}
+			c2.write((raw + 'GET /never HTTP/1.1\r\nHost: x\r\n\r\n').bytes()) or {}
+			mut pr2 := PipeReader{}
+			st2, _ := pr2.next_response(mut c2) or {
+				assert false, 'epoll=${epoll} bad: ${err}'
+				return
+			}
+			assert st2 == want, 'epoll=${epoll} ${raw}: ${st2}'
+			if _, b2 := pr2.next_response(mut c2) {
+				assert false, 'epoll=${epoll} served after framing error: ${b2}'
+			}
+			c2.close() or {}
+		}
+	}
+}

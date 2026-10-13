@@ -52,8 +52,8 @@ snap := stats.snapshot() // active, accepted, rejected_max, closed, requests
 
 1. **Idle vs active timeout.** After the first message on a connection, the next read uses `idle_timeout`. Once bytes arrive for a new request, `read_timeout` applies again.
 2. **Headers.** Bytes accumulate until `\r\n\r\n`. Cap: `max_header_bytes` → 413 / error close.
-3. **Body.** Only **`Content-Length`** bodies are read. Size must be ≤ `max_body_bytes`.
-4. **Chunked / Transfer-Encoding.** Not supported. Request is rejected with **400** and the connection is closed (no keep-alive desync).
+3. **Body.** `Content-Length` or `Transfer-Encoding: chunked` (HTTP/1.1). Size must be ≤ `max_body_bytes`; for chunked that is the decoded size, and `req.body` holds the decoded bytes (trailers are dropped).
+4. **Strict framing.** Any other transfer coding, a coding list (`gzip, chunked`), TE together with `Content-Length`, a malformed chunk line, or bare CR/LF is rejected with **400** and the connection is closed (no keep-alive desync).
 5. **Leftover.** Extra bytes after the message stay in a per-conn buffer for the next request (pipelining-tolerant read path). Full HTTP/1.1 pipelining is not a product claim, but the read path is stress-tested with multi-request bursts (`engine/pipeline_test.v`).
 
 ## Parse and validate

@@ -44,8 +44,10 @@ mut:
 	write_buf []u8
 	write_off int
 	writing   bool
-	out_armed bool // EPOLLOUT registered (short write pending)
-	close_me  bool // close after write drains
+	out_armed bool           // EPOLLOUT registered (short write pending)
+	close_me  bool           // close after write drains
+	chunk     http.ChunkScan // resumable framing of a chunked body, offsets from read_off
+	chunk_on  bool
 }
 
 struct ReactorState {
@@ -210,6 +212,7 @@ fn reactor_accept(epfd int, lfd int, mut st ReactorState, max_conns int) ! {
 		st.slots[si].writing = false
 		st.slots[si].out_armed = false
 		st.slots[si].close_me = false
+		st.slots[si].chunk_on = false
 		st.fd_map[cfd] = si
 		st.n_conns++
 
@@ -283,7 +286,14 @@ fn reactor_on_read(epfd int, mut st ReactorState, si int, mut tmp []u8, handler 
 		st.slots[si].read_off = 0
 		for !st.slots[si].close_me {
 			off := st.slots[si].read_off
-			total := reactor_message_len(unsafe { st.slots[si].assem[off..] }) or { break }
+			total := reactor_message_len(unsafe { st.slots[si].assem[off..] }, mut st.slots[si], opts) or {
+				status := if err.msg() == 'payload too large' { 413 } else { 400 }
+				reactor_write_error(epfd, mut st, si, status, err.msg())
+				return
+			}
+			if total < 0 {
+				break
+			}
 			msg := unsafe { st.slots[si].assem[off..off + total] }
 			st.slots[si].read_off = off + total
 			if !reactor_serve_one(epfd, mut st, si, msg, handler, opts) {
@@ -307,12 +317,29 @@ fn reactor_on_read(epfd int, mut st ReactorState, si int, mut tmp []u8, handler 
 	}
 }
 
-fn reactor_message_len(buf []u8) ?int {
-	hdr_end := index_of_double_crlf(buf) or { return none }
+// reactor_message_len is the length of the first message in buf, or -1 when it
+// is not complete yet. A chunked body is framed incrementally in slot.chunk.
+fn reactor_message_len(buf []u8, mut slot ReactorSlot, opts ServerOptions) !int {
+	hdr_end := index_of_double_crlf(buf) or { return -1 }
 	body_start := hdr_end + 4
 	hdr := unsafe { buf[..hdr_end] }
 	if transfer_encoding_present(hdr) {
-		return body_start
+		if content_length_from_headers(hdr) != none {
+			return error('transfer-encoding and content-length conflict')
+		}
+		if !chunked_te(hdr) {
+			return error('transfer-encoding not supported')
+		}
+		if !slot.chunk_on {
+			slot.chunk = http.ChunkScan.new(body_start)
+			slot.chunk_on = true
+		}
+		mut sink := []u8{}
+		if !http.scan_chunked(buf, mut slot.chunk, opts.max_body_bytes, false, mut sink)! {
+			return -1
+		}
+		slot.chunk_on = false
+		return slot.chunk.pos
 	}
 	cl := content_length_from_headers(hdr) or { return body_start }
 	if cl < 0 {
@@ -320,7 +347,7 @@ fn reactor_message_len(buf []u8) ?int {
 	}
 	total := body_start + cl
 	if buf.len < total {
-		return none
+		return -1
 	}
 	return total
 }

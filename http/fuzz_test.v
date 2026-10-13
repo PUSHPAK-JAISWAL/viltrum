@@ -25,6 +25,19 @@ fn test_rejects_ambiguous_framing() {
 		'GET / HTTP/1.1\r\nHost: x\r\nX(y): z\r\n\r\n', // non-token name
 		'GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding : chunked\r\n\r\n',
 		'GET /a\nb HTTP/1.1\r\nHost: x\r\n\r\n', // bare LF in request line
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked, chunked\r\n\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n',
+		'POST / HTTP/1.0\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0x5\r\nhello\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n-5\r\nhello\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n000000005\r\nhello\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhelloX0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\nhello\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5 x\x00\r\nhello\r\n0\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nBad Trailer\r\n\r\n',
+		'POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n',
 	]
 	for raw in bad {
 		if req := parse_request(raw.bytes()) {
@@ -63,7 +76,7 @@ const fuzz_seeds = [
 	'OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n',
 	'GET http://x/a/../b?q HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
 	'POST /u HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=B\r\nContent-Length: 78\r\n\r\n--B\r\nContent-Disposition: form-data; name="f"; filename="a.txt"\r\n\r\nhi\r\n--B--\r\n',
-	'GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n',
+	'POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n4;ext=1\r\nWiki\r\n5\r\npedia\r\n0\r\nX-T: 1\r\n\r\n',
 ]
 
 const fuzz_tokens = [':', ' ', '\t', '\r', '\n', '\r\n', '\r\n\r\n', '\x00', '\xff', ',',
