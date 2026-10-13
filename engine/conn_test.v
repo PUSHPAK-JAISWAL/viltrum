@@ -253,3 +253,19 @@ fn test_seed_and_recycle_assembly() {
 	assert assem.len == 0
 	assert assem.cap == cap1
 }
+
+fn test_match_ok_agrees_with_match_parts() {
+	patterns := [[]string{}, ['a'], [':id'], ['a', ':id'], ['*rest'],
+		['a', '*rest'], ['*'], ['*rest', 'b'], ['a', 'b']]
+	paths := [[]string{}, ['a'], ['b'], ['a', 'b'], ['a', 'b', 'c'],
+		['*']]
+	for pat in patterns {
+		for p in paths {
+			_, ok := match_parts(pat, p)
+			assert match_ok(pat, p) == ok, '${pat} ${p}'
+		}
+	}
+	assert eq_fold('get', 'GET')
+	assert !eq_fold('GET', 'GETS')
+	assert !eq_fold('GET', 'PUT')
+}

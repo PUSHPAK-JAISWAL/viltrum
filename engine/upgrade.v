@@ -36,23 +36,29 @@ fn match_upgrade(routes []UpgradeRoute, req http.Request) ?UpgradeHit {
 	if routes.len == 0 {
 		return none
 	}
-	method := req.method.to_upper()
-	path := if req.path == '*' { '*' } else { http.normalize_path(req.path) }
-	path_parts := if path == '*' {
-		['*']
-	} else {
-		path.trim_right('/').split('/').filter(it.len > 0)
-	}
+	// Every HTTP request passes through here when the app has upgrade routes, so
+	// split the path only once a method matches and build params only on a hit.
+	mut path_parts := []string{}
+	mut split := false
 	for route in routes {
-		if route.method.to_upper() != method {
+		if !eq_fold(route.method, req.method) {
 			continue
+		}
+		if !split {
+			split = true
+			path := if req.path == '*' { '*' } else { http.normalize_path(req.path) }
+			path_parts = if path == '*' {
+				['*']
+			} else {
+				path.trim_right('/').split('/').filter(it.len > 0)
+			}
 		}
 		pat := normalize_upgrade_pattern(route.pattern)
 		parts := pat.trim_right('/').split('/').filter(it.len > 0)
-		params, ok := match_parts(parts, path_parts)
-		if !ok {
+		if !match_ok(parts, path_parts) {
 			continue
 		}
+		params, _ := match_parts(parts, path_parts)
 		return UpgradeHit{
 			handler: route.handler
 			params:  params
@@ -73,6 +79,43 @@ fn normalize_upgrade_pattern(pattern string) string {
 		p = p.trim_right('/')
 	}
 	return p
+}
+
+// eq_fold compares ASCII strings ignoring case without allocating.
+fn eq_fold(a string, b string) bool {
+	if a.len != b.len {
+		return false
+	}
+	for i in 0 .. a.len {
+		mut x := a[i]
+		mut y := b[i]
+		if x >= `a` && x <= `z` {
+			x -= 32
+		}
+		if y >= `a` && y <= `z` {
+			y -= 32
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
+}
+
+// match_ok is match_parts without building params (no allocation on a miss).
+fn match_ok(pattern []string, path []string) bool {
+	for i, p in pattern {
+		if p.starts_with('*') {
+			return i == pattern.len - 1 && p.len > 1
+		}
+		if i >= path.len {
+			return false
+		}
+		if !p.starts_with(':') && p != path[i] {
+			return false
+		}
+	}
+	return pattern.len == path.len
 }
 
 // match_parts mirrors router rules: :id and trailing *rest.
