@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.3](https://github.com/Tuntii/viltrum/compare/v0.12.2...v0.12.3) (2026-10-13)
+
+### Bug Fixes
+
+* **engine:** build on newer V compilers ([e517557](https://github.com/Tuntii/viltrum/commit/e51755789bac344b2e14ef295c51eb280d473077))
+* **engine:** raise listen backlog to 4096 ([a0f4fae](https://github.com/Tuntii/viltrum/commit/a0f4faea0e5db0344573633917d76022f5ec466c))
+
+### Performance Improvements
+
+* **engine:** batch pipelined responses into one write ([5fe5846](https://github.com/Tuntii/viltrum/commit/5fe58469d37f50b3533d20b974d536ddce7a9ccd))
+* **engine:** no allocation for non-matching upgrade routes ([33d7214](https://github.com/Tuntii/viltrum/commit/33d721417d5a8d6e9342c772f03217fa8d0aabae))
+* **engine:** skip the EAGAIN recv after a short epoll read ([47f58f0](https://github.com/Tuntii/viltrum/commit/47f58f006cd487779005bbb1acdbf3fc0478f26c))
+* **http:** build Date header directly, push_many in serializer ([6442ff8](https://github.com/Tuntii/viltrum/commit/6442ff8b46495e8991fd59cb431238763a53b833))
+* **http:** keep headers as a field list instead of a map ([9bc9e1d](https://github.com/Tuntii/viltrum/commit/9bc9e1d74b64aa903b911a08ea583c2ddf34e70e))
+* **router:** match static routes without splitting the path ([1bd3a92](https://github.com/Tuntii/viltrum/commit/1bd3a928db6bf52fc0c9e113cdc13b2b673b58ec))
+
 ## [0.12.2](https://github.com/Tuntii/viltrum/compare/v0.12.1...v0.12.2) (2026-10-12)
 
 ### Bug Fixes
