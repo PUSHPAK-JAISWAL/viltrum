@@ -124,7 +124,8 @@ v0.12.1, `-prod`, this developer machine (Ryzen 7 4800H). Three-run median, 2026
 | WebSocket echo (Python client) | ~11–23k msg/s (2026-07-23, client-bound; not re-run) |
 
 TFB-shaped pipelined plaintext (wrk, depth 16, c=256, `epoll_cores: 4`) on an older 2013 Xeon VM, 2026-10-13:
-~106k req/s. On the same run, V's veb did ~34k and Axum ~83k. See [benches/compare/PIPELINE.md](benches/compare/PIPELINE.md).
+~141k req/s. On the same run, V's veb did ~33k and Axum ~71k. Single runs; Axum varied 71–83k across runs.
+See [benches/compare/PIPELINE.md](benches/compare/PIPELINE.md).
 The TechEmpower entry lives in [benches/tfb](benches/tfb).
 
 ```bash

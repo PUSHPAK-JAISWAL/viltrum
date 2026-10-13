@@ -58,5 +58,36 @@ At c=16384 × depth 16 there are ~262k requests in flight. At ~55k req/s that is
 timeouts are gone. The listen backlog is now 4096 (was 128; Tokio uses 1024). On this host that changed nothing
 measurable for epoll. On spawn, one run went from 2073 timeouts to 124.
 
+## Header field list + static routes (measured 2026-10-13)
+
+1. `HeaderMap` is a field list, not a map (a V map is three allocations plus a hash per lookup).
+2. Routes without `:param` / `*wildcard` compare the normalized path to a precomputed key; no split, no params map.
+3. `normalize_path` / `split_target` no longer copy an unchanged origin-form target; the epoll loop skips the
+   `recv` that would only return EAGAIN after a short read.
+
+A/B against the previous commit, two alternating rounds, mean:
+
+| Point | epoll before | epoll after | spawn before | spawn after |
+|-------|-------------:|------------:|-------------:|------------:|
+| plaintext c=256 | 111.6k | 146.0k | 54.5k | 64.1k |
+| plaintext c=1024 | 104.8k | 137.8k | 46.0k | 61.7k |
+| json c=64 | 18.9k | 20.4k | 15.2k | 16.3k |
+| json c=256 | 18.7k | 20.0k | 14.0k | 14.8k |
+| json c=1024 | 16.3k | 17.9k | 11.7k | 12.0k |
+
+Then one three-way run (single run; Axum read ~10% lower here than in the run above):
+
+| Point | viltrum epoll_cores=4 | veb (V dev) | Axum |
+|-------|----------------------:|------------:|-----:|
+| plaintext c=256 | 140.7k | 32.5k | 71.0k |
+| plaintext c=1024 | 126.2k | 33.2k | 71.3k |
+| plaintext c=4096 | 115.9k | 28.9k | 54.3k |
+| plaintext c=16384 | 82.3k | 17.6k | 27.8k |
+| json c=64 | 18.5k | 4.0k | 16.0k |
+| json c=256 | 19.2k | 11.6k | 16.9k |
+
+The JSON path is now ~70% kernel time on this host (loopback netfilter alone is ~5%), so further user-space
+work has little left to win here.
+
 Tests: `engine/pipeline_test.v` covers deep bursts, POST/GET mixes, a bad request mid-burst, and `Connection: close`
 mid-burst on both I/O paths.
