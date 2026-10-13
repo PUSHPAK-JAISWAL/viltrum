@@ -299,7 +299,9 @@ fn reactor_on_read(epfd int, mut st ReactorState, si int, mut tmp []u8, handler 
 			st.slots[si].assem = st.slots[si].assem[off..].clone()
 		}
 		reactor_flush(epfd, mut st, si)
-		if !st.slots[si].used || st.slots[si].writing {
+		// A short read drained the socket. epoll is level-triggered and reports
+		// any later bytes, so skip the recv that would only return EAGAIN.
+		if !st.slots[si].used || st.slots[si].writing || nr < tmp.len {
 			return
 		}
 	}
