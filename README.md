@@ -123,12 +123,22 @@ v0.12.1, `-prod`, this developer machine (Ryzen 7 4800H). Three-run median, 2026
 | `GET /` sustained (oha, 10s, c=100) | ~194k req/s (Axum peer ~247k) |
 | WebSocket echo (Python client) | ~11–23k msg/s (2026-07-23, client-bound; not re-run) |
 
-TFB-shaped pipelined plaintext (wrk, depth 16, c=256, `epoll_cores: 4`) on an older 2013 Xeon VM, 2026-10-13:
-~141k req/s. On the same run, V's veb did ~33k and Axum ~71k. Single runs; Axum varied 71–83k across runs.
-See [benches/compare/PIPELINE.md](benches/compare/PIPELINE.md).
-TechEmpower was archived in March 2026; the [HttpArena](https://www.http-arena.com/) entry lives in
-[benches/httparena](benches/httparena) and passes its `validate.sh` (baseline incl. byte-offset fragmentation and
-chunked bodies, pipelined, json-comp, echo-ws).
+### HttpArena (shared 64-thread box, 2026-10-14, v0.13.0, `epoll_cores` entry)
+
+The independent run, next to everything else on the same machine. Viltrum is mid-pack on plain HTTP and
+WebSocket, and far behind on compressed JSON (fixed in v0.13.1: gzip ~3.5× faster locally, not yet re-run there).
+
+| Profile | viltrum | Rank | Field median | Axum |
+|---------|--------:|-----:|-------------:|-----:|
+| baseline, 4096 conns | 595k | 99 / 151 | 1.16M | 1.08M |
+| pipelined, 4096 conns | 981k | 98 / 140 | 2.49M | 6.48M |
+| limited-conn, 4096 conns | 524k | 79 / 151 | 565k | 685k |
+| json-comp, 4096 conns | 14k | 123 / 125 | 195k | 268k |
+| echo-ws, 4096 conns | 2.13M | 32 / 55 | 2.29M | — |
+
+It used 11–23 of the 64 cores on the HTTP profiles; GC pauses under many threads are the likely limit. Earlier
+single-VM runs ([PIPELINE.md](benches/compare/PIPELINE.md)) showed viltrum ahead of Axum, which did not hold
+on modern hardware. The entry lives in [benches/httparena](benches/httparena).
 
 ```bash
 bash benches/run.sh

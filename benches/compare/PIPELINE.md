@@ -1,5 +1,10 @@
 # Pipelined responses + serialize hot path (measured 2026-10-12)
 
+> **Read with the HttpArena run in the [README](../../README.md#httparena-shared-64-thread-box-2026-10-14-v0130-epoll_cores-entry).**
+> The ratios below come from one old 4-core VM where syscalls dominate. On HttpArena's 64-thread box viltrum
+> trailed Axum (baseline 0.55×, pipelined 0.15×). The before/after deltas here still hold; the cross-framework
+> comparisons do not carry over.
+
 TFB-shaped run: `GET /plaintext` with wrk + `pipeline.lua` depth 16, `GET /json` (V `json.encode` per request) without pipelining.
 Server pinned to 4 cores (`taskset -c 0-3`), wrk to 2 (`-c 4-5`), 10 s per point, single run.
 
