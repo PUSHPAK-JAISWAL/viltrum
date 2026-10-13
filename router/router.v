@@ -10,6 +10,10 @@ struct Route {
 	method  string
 	pattern string
 	parts   []string
+	// key is '/' + parts joined: the only path a route without :params or
+	// *wildcard matches, compared as a string instead of splitting the path.
+	key     string
+	static  bool
 	handler HandlerFn = unsafe { nil }
 }
 
@@ -30,6 +34,8 @@ pub fn (mut r Router) add(method string, pattern string, handler HandlerFn) {
 		method:  method.to_upper()
 		pattern: norm
 		parts:   parts
+		key:     '/' + parts.join('/')
+		static:  !parts.any(it.starts_with(':') || it.starts_with('*'))
 		handler: handler
 	}
 }
@@ -65,61 +71,102 @@ pub fn (mut r Router) head(pattern string, handler HandlerFn) {
 pub fn (r &Router) handle(req http.Request) http.Response {
 	// OPTIONS * is not path-routed; apps handle via middleware (e.g. cors) or explicit route.
 	path := if req.path == '*' { '*' } else { http.normalize_path(req.path) }
-	path_parts := if path == '*' {
-		['*']
-	} else {
-		path.trim_right('/').split('/').filter(it.len > 0)
+	mut m := Match{
+		path: path
 	}
-	method := req.method.to_upper()
-	mut method_matched := false
+	method := upper_ascii(req.method)
 
 	// Prefer exact method match; HEAD may fall back to GET (RFC 9110).
-	if resp := r.dispatch(method, path, path_parts, req) {
+	if resp := r.dispatch(method, mut m, req) {
 		return resp
 	}
 	if method == 'HEAD' {
-		if resp := r.dispatch('GET', path, path_parts, req) {
+		if resp := r.dispatch('GET', mut m, req) {
 			return resp
 		}
 	}
 
 	// Distinguish 405 vs 404: path matched any method?
 	for route in r.routes {
-		_, ok := match_parts(route.parts, path_parts)
-		if ok {
-			method_matched = true
-			break
+		if m.hits(route) {
+			return http.Response.method_not_allowed()
 		}
-	}
-	if method_matched {
-		return http.Response.method_not_allowed()
 	}
 	return http.Response.not_found()
 }
 
-fn (r &Router) dispatch(method string, path string, path_parts []string, req http.Request) ?http.Response {
+// Match is the request path, split into segments only when a :param or
+// *wildcard route (or an odd path like '/a//b') needs them.
+struct Match {
+	path string
+mut:
+	key   string
+	parts []string
+	split bool
+}
+
+fn (mut m Match) ensure_split() {
+	if m.split {
+		return
+	}
+	m.split = true
+	m.parts = if m.path == '*' {
+		['*']
+	} else {
+		m.path.trim_right('/').split('/').filter(it.len > 0)
+	}
+}
+
+// path_key is the path in Route.key form. A normalized path that starts with
+// '/' and has no empty segment already is one, so the common case allocates nothing.
+fn (mut m Match) path_key() string {
+	if m.path.len > 0 && m.path[0] == `/` && !m.path.contains('//') {
+		return m.path
+	}
+	if m.key.len == 0 {
+		m.ensure_split()
+		m.key = '/' + m.parts.join('/')
+	}
+	return m.key
+}
+
+fn (mut m Match) hits(route Route) bool {
+	if route.static {
+		return m.path_key() == route.key
+	}
+	m.ensure_split()
+	return match_ok(route.parts, m.parts)
+}
+
+fn (r &Router) dispatch(method string, mut m Match, req http.Request) ?http.Response {
 	for route in r.routes {
-		if route.method != method {
-			continue
-		}
-		params, ok := match_parts(route.parts, path_parts)
-		if !ok {
+		if route.method != method || !m.hits(route) {
 			continue
 		}
 		enriched := http.Request{
 			method:  req.method
 			target:  req.target
-			path:    path
+			path:    m.path
 			query:   req.query
 			version: req.version
 			headers: req.headers
 			body:    req.body
-			params:  params.clone()
+			params:  if route.static { req.params } else { route_params(route.parts, m.parts) }
 			ctx:     req.ctx
 		}
 		return route.handler(enriched)
 	}
 	return none
+}
+
+// upper_ascii returns s itself when it has no lowercase ASCII (the usual method token).
+fn upper_ascii(s string) string {
+	for c in s {
+		if c >= `a` && c <= `z` {
+			return s.to_upper()
+		}
+	}
+	return s
 }
 
 fn normalize_pattern(pattern string) string {
@@ -141,33 +188,33 @@ fn split_pattern(pattern string) []string {
 	return pattern.trim_right('/').split('/').filter(it.len > 0)
 }
 
-// match_parts supports :id params and a trailing *rest wildcard.
-fn match_parts(pattern []string, path []string) (map[string]string, bool) {
-	mut params := map[string]string{}
-	mut i := 0
-	for pi, p in pattern {
+// match_ok supports :id params and a trailing *rest wildcard (named, last segment only).
+fn match_ok(pattern []string, path []string) bool {
+	for i, p in pattern {
 		if p.starts_with('*') {
-			// must be last segment
-			if pi != pattern.len - 1 {
-				return map[string]string{}, false
-			}
-			name := p[1..]
-			if name.len == 0 {
-				return map[string]string{}, false
-			}
-			rest := if i < path.len { path[i..].join('/') } else { '' }
-			params[name] = rest
-			return params, true
+			return i == pattern.len - 1 && p.len > 1
 		}
 		if i >= path.len {
-			return map[string]string{}, false
+			return false
+		}
+		if !p.starts_with(':') && p != path[i] {
+			return false
+		}
+	}
+	return pattern.len == path.len
+}
+
+// route_params extracts :id and *rest values for a pattern match_ok accepted.
+fn route_params(pattern []string, path []string) map[string]string {
+	mut params := map[string]string{}
+	for i, p in pattern {
+		if p.starts_with('*') {
+			params[p[1..]] = if i < path.len { path[i..].join('/') } else { '' }
+			break
 		}
 		if p.starts_with(':') {
 			params[p[1..]] = path[i]
-		} else if p != path[i] {
-			return map[string]string{}, false
 		}
-		i++
 	}
-	return params, i == path.len
+	return params
 }
