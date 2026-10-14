@@ -1,3 +1,5 @@
+> **Not in 1.0.** This page describes v0.13. The feature returns on the 1.0 core later.
+
 # WebSockets (`ws://`)
 
 Viltrum ships a **first-party** RFC 6455 server on the v0.4 Conn / `app.upgrade` path. Not a wrapper around another stack.

@@ -1,129 +1,23 @@
 # Getting started
 
-## Requirements
+1. Install V 0.5.2 and link the module: `bash scripts/install.sh`.
+2. Run `v run examples/hello` and open http://127.0.0.1:8080/.
+3. Copy `examples/features/main.v` as a starting point.
 
-- [V](https://github.com/vlang/v) on `PATH` (`v version`)
-- Linux/macOS (Windows untested)
-
-## Install
-
-```bash
-git clone https://github.com/Tuntii/viltrum.git
-cd viltrum
-bash scripts/install.sh
-```
-
-`install.sh` symlinks the repo to `~/.vmodules/viltrum` so `import viltrum` resolves.
-
-To point at another checkout later:
-
-```bash
-ln -sfn /path/to/viltrum ~/.vmodules/viltrum
-```
-
-## Import style
-
-Docs and examples prefer a **selective import** (ergonomic handlers):
+A handler is `fn (mut c viltrum.Ctx)`. Middleware has the same type and calls `c.next()` to continue.
 
 ```v
-import viltrum {
-	new
-	recover
-	text
-	json
-	Request
-	Response
-	// add: Conn, WsSocket, WsOptions, ServerOptions, chain, cors, Mount, …
+fn auth(mut c viltrum.Ctx) {
+	if c.header('authorization') or { '' } == '' {
+		c.text(401, 'unauthorized')
+		return
+	}
+	c.next()
 }
 ```
 
-Then write `new()`, `Request`, `text(...)` without a module prefix.
+Register it globally (`app.use(auth)`), on a group (`app.group('/api', auth)`) or on one route
+(`app.get('/me', auth, me)`).
 
-Fully qualified still works:
-
-```v
-import viltrum
-
-mut app := viltrum.new()
-// viltrum.Request, viltrum.text, …
-```
-
-Short alias is fine in larger apps: `import viltrum as v`.
-
-## Hello
-
-```bash
-v run examples/hello
-# curl http://127.0.0.1:8080/
-```
-
-Want a full app shape (login + SPA + JSON API)? Separate starter repo:
-
-```bash
-git clone https://github.com/Tuntii/full-stack-viltrum-template.git
-cd full-stack-viltrum-template && bash scripts/setup.sh && v run .
-# http://127.0.0.1:8090/
-```
-
-Minimal program:
-
-```v
-module main
-
-import viltrum {
-	new
-	text
-	Request
-	Response
-}
-
-fn main() {
-	mut app := new()
-	app.get('/', fn (req Request) Response {
-		return text(200, 'hello\n')
-	})
-	app.listen('127.0.0.1:8080') or { panic(err) }
-}
-```
-
-## Layout (this repo)
-
-| Path | Role |
-|------|------|
-| `viltrum.v` | App facade (`new`, routes, `listen`, `ws`, middleware helpers) |
-| `engine/` | TCP accept, HTTP loop, `Conn`, upgrade match |
-| `http/` | Parse/serialize, headers, Request/Response |
-| `router/` | Method + path params + wildcards |
-| `ws/` | RFC 6455 server framing |
-| `staticf/` | Static file responses |
-| `examples/` | Runnable demos |
-
-## Common options
-
-```v
-import time
-import viltrum { new, ServerOptions, new_conn_stats }
-
-mut stats := new_conn_stats()
-mut app := new()
-app.server_options(ServerOptions{
-	max_body_bytes:  1 << 20
-	max_conns:       1024
-	drain_timeout:   10 * time.second // wait in-flight after SIGINT/SIGTERM
-	stats:           stats            // optional live counters
-	read_timeout:    30 * time.second
-	idle_timeout:    60 * time.second
-	handle_signals:  true // SIGINT/SIGTERM stop accept loop
-	send_date:       true
-	server_header:   'viltrum'
-})
-// snap := stats.snapshot() // active, accepted, rejected_max, closed
-```
-
-Defaults are conservative. Raise timeouts for long-lived WebSockets; see [ws.md](./ws.md). Drain and stats: [connection.md](./connection.md).
-
-## Next
-
-- Routing and middleware: [request-response.md](./request-response.md)
-- Deploy behind a proxy: [deploy.md](./deploy.md)
-- WebSocket: [ws.md](./ws.md) · `v run examples/ws_echo`
+Handlers run on several worker threads at once. Shared state needs a lock (see `examples/rest`), or one copy per
+worker indexed by `c.worker_id()` (size it with `app.worker_count()`).

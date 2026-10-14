@@ -7,9 +7,10 @@
 [![ci](https://github.com/Tuntii/viltrum/actions/workflows/ci.yml/badge.svg)](https://github.com/Tuntii/viltrum/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/Tuntii/viltrum)](https://github.com/Tuntii/viltrum/releases)
 
-You write a few routes. Viltrum owns the rest of the wire: accept loop, HTTP/1.1, keep-alive, hijack, WebSocket frames. No third-party stack under the hood. No ORM, sessions, or template engine pretending to be a framework.
+You write routes. Viltrum owns the wire: its own HTTP/1.1 engine, one epoll worker per CPU, pipelining, and no
+allocation per request inside the framework. No third-party stack under the hood.
 
-Built for [V](https://vlang.io). Cleartext first; put Caddy or nginx in front when you want edge TLS. Optional in-process HTTPS/WSS via `app.listen_tls` (mbedtls) for single-binary demos.
+Built for [V](https://vlang.io). Linux. Cleartext; put Caddy or nginx in front for TLS.
 
 ```bash
 git clone https://github.com/Tuntii/viltrum.git && cd viltrum
@@ -18,8 +19,6 @@ v run examples/hello
 # curl http://127.0.0.1:8080/
 ```
 
-Needs `v` on your `PATH`.
-
 ---
 
 ## A server in one file
@@ -27,89 +26,41 @@ Needs `v` on your `PATH`.
 ```v
 module main
 
-import viltrum {
-	new
-	recover
-	text
-	json
-	Request
-	Response
-}
+import viltrum
 
 fn main() {
-	mut app := new()
-	app.use(recover)
-
-	app.get('/', fn (req Request) Response {
-		return text(200, 'ok\n')
+	mut app := viltrum.new()
+	app.use(viltrum.recover)
+	app.get('/', fn (mut c viltrum.Ctx) {
+		c.text(200, 'ok\n')
 	})
-
-	app.get('/hi/:name', fn (req Request) Response {
-		name := req.param('name') or { 'world' }
-		return json(200, '{"hi":"${name}"}')
+	app.get('/hi/:name', fn (mut c viltrum.Ctx) {
+		c.text(200, c.param('name') or { 'world' })
 	})
-
 	app.listen('127.0.0.1:8080') or { panic(err) }
 }
 ```
 
-Selective imports keep handlers short. Full prefixes (`import viltrum` + `viltrum.new()`) work if you prefer them.
-
-### WebSocket without a second stack
-
-Same process, same `Conn` model. Text and binary, ping/pong, size limits. Over TLS: same `app.ws` + `app.listen_tls` → `wss://` (see [docs/ws.md](docs/ws.md), [docs/tls.md](docs/tls.md)).
-
-```v
-import viltrum { new, WsSocket }
-
-mut app := new()
-app.ws('/ws', fn (mut s WsSocket) {
-	for {
-		msg := s.read_message() or { break }
-		if msg.is_text() {
-			s.write_text(msg.text()) or { break }
-		}
-	}
-	s.close_quiet()
-})
-app.listen('127.0.0.1:8084') or { panic(err) }
-```
-
-```bash
-v run examples/ws_echo
-websocat ws://127.0.0.1:8084/ws
-
-bash scripts/dev-cert.sh
-v run examples/wss_echo
-websocat -k wss://127.0.0.1:8444/ws
-```
-
-### When HTTP is not enough
-
-```v
-import viltrum { new, Conn, Request, switching_protocols }
-
-app.upgrade('GET', '/echo', fn (mut c Conn, req Request) {
-	c.write_all(switching_protocols('echo').to_bytes()) or { return }
-	// you own the bytes after 101
-	c.close() or {}
-})
-```
+Handlers get a `Ctx`: request views (`path`, `param`, `query_param`, `header`, `body`) and a response writer
+(`text`, `text_int`, `json`, `bytes`, `no_content`, `set_header`). Request strings point into the connection's
+buffer and are valid until the handler returns; `.clone()` what you keep.
 
 ---
 
 ## What you actually get
 
-| | |
-|--|--|
-| HTTP/1.1 | Keep-alive, Host check, body size limits, optional Date/Server |
-| Router | `:param`, trailing `*wildcard`, HEAD falls back to GET |
-| App | `mount`, `chain`, cors, gzip, static files, logger, recover |
-| Bodies | `Content-Length` or `chunked`. Other codings, TE+CL, duplicate or non-digit CL, `Name :`, obs-fold, bare CR/LF → **400** (no desync games; parser is fuzzed in CI) |
-| Upgrade | One path: `app.upgrade` + `Conn` |
-| WebSocket | `app.ws` on that path (`ws://`) |
+| Area | In 1.0 |
+|------|--------|
+| HTTP/1.1 | keep-alive, pipelining (responses batched into one write), `Expect: 100-continue`, HEAD |
+| Bodies | `Content-Length` or `chunked`. Other codings, TE+CL, duplicate or non-digit CL, `Name :`, obs-fold, bare CR/LF → **400** (parser fuzzed in CI) |
+| Engine | one `SO_REUSEPORT` epoll worker per CPU (cpuset-aware), backpressure, read/idle/write timeouts, `max_conns`, graceful SIGINT/SIGTERM |
+| Routing | `:param`, trailing `*rest`, groups, global and per-route middleware (`c.next()`) |
+| Middleware | `recover`, `gzip`, `cors`, `logger` |
+| JSON | `c.json(200, value)`: compile-time encoder, no reflection |
+| Tests | `app.handle_raw(raw)` serves a raw request in-process |
 
-Nothing here pretends to replace your reverse proxy.
+Not in 1.0 yet (they return on the new core): TLS/WSS, WebSocket and upgrade, static files, forms and uploads,
+the HTTP client, non-Linux platforms.
 
 ---
 
@@ -195,11 +146,9 @@ Inspired by [full-stack-fastapi-template](https://github.com/fastapi/full-stack-
 
 ## Roadmap, in one breath
 
-**Shipped (v0.12.1):** cleartext HTTP/1.1, first-party `ws://`, optional in-process HTTPS/WSS, forms/JSON helpers, one-shot `fetch` / `fetch_tls`, drain + `ConnStats`, SIGHUP cert reload, cleartext reads that arm `SO_RCVTIMEO` once. Full-stack teaching app: [full-stack-viltrum-template](https://github.com/Tuntii/full-stack-viltrum-template).
+**1.0:** the zero-allocation core above (design: [docs/superpowers/specs/2026-10-15-v1-zero-alloc-core-design.md](docs/superpowers/specs/2026-10-15-v1-zero-alloc-core-design.md)).
 
-**Next:** default I/O stays spawn-per-conn. A 16-loop epoll path missed the keep-alive bar (E +0.3% with `recover`). See [ROADMAP.md](ROADMAP.md) and [benches/compare/CORES.md](benches/compare/CORES.md).
-
-Not on the menu: HTTP/2–3, auth/session platforms, ORM, “be Caddy.”
+**Next:** TLS, WebSocket, static files and forms on the new core.
 
 ---
 
