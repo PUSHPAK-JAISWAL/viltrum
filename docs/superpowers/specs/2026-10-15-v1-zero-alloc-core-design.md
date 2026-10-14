@@ -120,8 +120,9 @@ keep today's syntax (`:id`, trailing `*rest`).
   route → run chain → repeat for every complete message in the buffer → one `send` for the batch → compact
   leftover bytes with `memmove`. A short read skips the extra `recv` (level-triggered epoll reports more).
 - **Chunked bodies** are decoded into a per-connection scratch buffer reused across requests.
-- **Backpressure:** if the write buffer cannot be sent, arm `EPOLLOUT` and stop reading that connection until it
-  drains. A peer whose pending output exceeds 1 MiB is closed.
+- **Backpressure:** a worker stops serving further pipelined requests once 1 MiB of output is pending and
+  stops reading a connection while its output is pending (`EPOLLOUT` armed). Memory stays bounded at one batch,
+  large responses still go out, and a peer that stops reading is closed by `write_timeout`.
 - **Connection semantics:** keep-alive by default on HTTP/1.1, `Connection: close` honored after the response,
   HTTP/1.0 closes unless `keep-alive`, `Expect: 100-continue` answered before the body.
 - **Errors:** framing or parse errors answer 400 (413/431 for limits) after any earlier pipelined responses, then

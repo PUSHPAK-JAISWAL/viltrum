@@ -20,7 +20,7 @@ fn test_date_matches_time_formatting() {
 	mut d := DateCache{}
 	mut ts := i64(0)
 	for ts < 4102444800 {
-		d.format(time.unix(ts))
+		d.format(ts)
 		want := time.unix(ts).custom_format('ddd, DD MMM YYYY HH:mm:ss') + ' GMT'
 		assert d.text[..].bytestr() == want, ts.str()
 		ts += 839_999

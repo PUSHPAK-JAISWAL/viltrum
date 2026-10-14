@@ -1,0 +1,199 @@
+module engine
+
+import viltrum.http1
+import viltrum.router
+
+struct Item {
+	id    int
+	name  string
+	price int
+	tags  []string
+}
+
+struct Page {
+	items []Item
+	count int
+}
+
+fn make_items() []Item {
+	mut a := []Item{}
+	for i in 0 .. 20 {
+		a << Item{
+			id:    i
+			name:  'Item number ${i}'
+			price: i * 3
+			tags:  ['tag-a', 'tag-b']
+		}
+	}
+	return a
+}
+
+const items = make_items()
+
+fn first_items(n int) []Item {
+	mut v := unsafe { items }
+	unsafe {
+		v.len = if n < items.len { n } else { items.len }
+	}
+	return v
+}
+
+fn baseline(mut c http1.Ctx) {
+	sum := (c.query_int('a') or { 0 }) + (c.query_int('b') or { 0 }) + (c.body_int() or { 0 })
+	c.text_int(200, sum)
+}
+
+fn pipeline(mut c http1.Ctx) {
+	c.text(200, 'ok')
+}
+
+fn json_page(mut c http1.Ctx) {
+	n := int(c.param_int('count') or { 0 })
+	c.json(200, Page{
+		items: first_items(n)
+		count: n
+	})
+}
+
+fn silent(mut c http1.Ctx) {}
+
+fn make_router() &router.Router {
+	mut r := &router.Router{}
+	r.add(.get, '/baseline11', [http1.Handler(baseline)]) or { panic(err) }
+	r.add(.post, '/baseline11', [http1.Handler(baseline)]) or { panic(err) }
+	r.add(.get, '/pipeline', [http1.Handler(pipeline)]) or { panic(err) }
+	r.add(.get, '/json/:count', [http1.Handler(json_page)]) or { panic(err) }
+	r.add(.get, '/gz/:count', [http1.Handler(http1.gzip_middleware), http1.Handler(json_page)]) or {
+		panic(err)
+	}
+	r.add(.get, '/silent', [http1.Handler(silent)]) or { panic(err) }
+	return r
+}
+
+fn run(mut w Worker, mut c Conn, req []u8) {
+	unsafe {
+		c.rbuf.len = 0
+		c.wbuf.len = 0
+		c.rbuf.push_many(req.data, req.len)
+	}
+	c.close_after = false
+	c.frame.reset()
+	w.process(mut c)
+}
+
+const shapes = {
+	'get':          'GET /baseline11?a=13&b=42 HTTP/1.1\r\nHost: x\r\n\r\n'
+	'post_cl':      'POST /baseline11?a=13&b=42 HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n20'
+	'post_chunked': 'POST /baseline11?a=13&b=42 HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n20\r\n0\r\n\r\n'
+	'pipelined':    'GET /pipeline HTTP/1.1\r\nHost: x\r\n\r\n'.repeat(16)
+	'json':         'GET /json/10 HTTP/1.1\r\nHost: x\r\n\r\n'
+	'json_gzip':    'GET /gz/10 HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip, br\r\n\r\n'
+}
+
+fn test_each_shape_is_answered() {
+	mut w := new_worker(make_router(), Options{ send_date: false }, 0)
+	mut c := new_conn()
+	run(mut w, mut c, shapes['get'].bytes())
+	assert c.wbuf.bytestr() == 'HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 2\r\n\r\n55'
+	run(mut w, mut c, shapes['post_cl'].bytes())
+	assert c.wbuf.bytestr().ends_with('\r\n\r\n75')
+	run(mut w, mut c, shapes['post_chunked'].bytes())
+	assert c.wbuf.bytestr().ends_with('\r\n\r\n75')
+	run(mut w, mut c, shapes['pipelined'].bytes())
+	assert c.wbuf.bytestr().count('\r\n\r\nok') == 16
+	run(mut w, mut c, shapes['json'].bytes())
+	assert c.wbuf.bytestr().contains('"count":10}')
+	run(mut w, mut c, shapes['json_gzip'].bytes())
+	assert c.wbuf.bytestr().contains('Content-Encoding: gzip\r\n')
+	assert c.rbuf.len == 0 && !c.close_after
+}
+
+// The acceptance gate of the whole rewrite: once buffers have grown to their working
+// size, serving a request allocates nothing on the GC heap.
+fn test_hot_path_allocates_nothing() {
+	mut w := new_worker(make_router(), Options{}, 0)
+	mut c := new_conn()
+	for name, raw in shapes {
+		req := raw.bytes()
+		for _ in 0 .. 200 {
+			run(mut w, mut c, req)
+		}
+		before := http1.allocated_bytes()
+		for _ in 0 .. 10000 {
+			run(mut w, mut c, req)
+		}
+		assert http1.allocated_bytes() - before == 0, '${name} allocates'
+	}
+}
+
+// Review Focus 1: a handler that never responds still produces a response.
+fn test_silent_handler_gets_500_and_close() {
+	mut w := new_worker(make_router(), Options{ send_date: false }, 0)
+	mut c := new_conn()
+	run(mut w, mut c,
+		'GET /silent HTTP/1.1\r\nHost: x\r\n\r\nGET /pipeline HTTP/1.1\r\nHost: x\r\n\r\n'.bytes())
+	s := c.wbuf.bytestr()
+	assert s.starts_with('HTTP/1.1 500 Internal Server Error\r\n')
+	assert s.contains('Connection: close\r\n') && s.count('HTTP/1.1') == 1
+	assert c.close_after
+}
+
+fn test_bad_request_mid_pipeline() {
+	mut w := new_worker(make_router(), Options{ send_date: false }, 0)
+	mut c := new_conn()
+	ok := 'GET /pipeline HTTP/1.1\r\nHost: x\r\n\r\n'
+	run(mut w, mut c, (ok + ok + 'GET /pipeline HTTP/1.1\r\nHost : x\r\n\r\n' + ok).bytes())
+	s := c.wbuf.bytestr()
+	assert s.count('\r\n\r\nok') == 2
+	assert s.contains('HTTP/1.1 400 Bad Request\r\n') && s.ends_with('bad header name')
+	assert c.close_after && c.rbuf.len == 0
+}
+
+fn test_expect_continue_and_partial_requests() {
+	mut w := new_worker(make_router(), Options{ send_date: false }, 0)
+	mut c := new_conn()
+	run(mut w, mut c,
+		'POST /baseline11?a=1&b=2 HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\n'.bytes())
+	assert c.wbuf.bytestr() == 'HTTP/1.1 100 Continue\r\n\r\n'
+	assert c.reading && c.rbuf.len > 0
+	unsafe {
+		c.wbuf.len = 0
+	}
+	c.rbuf << '20'.bytes()
+	w.process(mut c)
+	assert c.wbuf.bytestr().ends_with('\r\n\r\n23')
+	assert !c.reading && c.rbuf.len == 0
+}
+
+fn test_misses_and_missing_host() {
+	mut w := new_worker(make_router(), Options{ send_date: false }, 0)
+	mut c := new_conn()
+	run(mut w, mut c, 'GET /nope HTTP/1.1\r\nHost: x\r\n\r\n'.bytes())
+	assert c.wbuf.bytestr().starts_with('HTTP/1.1 404 Not Found\r\n')
+	run(mut w, mut c, 'DELETE /pipeline HTTP/1.1\r\nHost: x\r\n\r\n'.bytes())
+	assert c.wbuf.bytestr().starts_with('HTTP/1.1 405 Method Not Allowed\r\n')
+	run(mut w, mut c, 'GET /pipeline HTTP/1.1\r\n\r\n'.bytes())
+	assert c.wbuf.bytestr().starts_with('HTTP/1.1 400 Bad Request\r\n') && c.close_after
+	run(mut w, mut c, 'GET /pipeline HTTP/1.0\r\n\r\n'.bytes())
+	assert c.wbuf.bytestr().ends_with('ok') && c.close_after
+}
+
+fn test_pipelining_pauses_at_max_pending() {
+	mut w := new_worker(make_router(), Options{
+		send_date:   false
+		max_pending: 200
+	}, 0)
+	mut c := new_conn()
+	run(mut w, mut c, shapes['pipelined'].bytes())
+	first := c.wbuf.bytestr().count('\r\n\r\nok')
+	assert first > 0 && first < 16
+	mut total := first
+	for total < 16 {
+		unsafe {
+			c.wbuf.len = 0
+		}
+		w.process(mut c)
+		total += c.wbuf.bytestr().count('\r\n\r\nok')
+	}
+	assert total == 16 && c.rbuf.len == 0
+}
