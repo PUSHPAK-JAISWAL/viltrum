@@ -28,6 +28,9 @@ jobs:
           v test engine/
           v test tests/
 
+      - name: Hot-path lint
+        run: bash scripts/hotpath_lint.sh
+
       - name: Build examples
         run: |
           v -o /tmp/viltrum-hello examples/hello
