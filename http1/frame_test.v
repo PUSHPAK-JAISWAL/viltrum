@@ -47,6 +47,7 @@ fn test_chunk_errors_carry_status() {
 	assert status_of(head + 'ffffff\r\n') == 413
 	assert status_of(head + '0\r\nX: ' + 'a'.repeat(9000) + '\r\n\r\n') == 431
 	assert status_of(head + '5;' + 'e'.repeat(5000)) == 400
+	assert status_of(head + '5;' + 'e'.repeat(5000) + '\r\nhello\r\n0\r\n\r\n') == 400
 }
 
 fn test_expect_continue_is_flagged_once_head_is_complete() {

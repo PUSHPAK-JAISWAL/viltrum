@@ -71,6 +71,9 @@ pub fn scan_chunked(buf []u8, mut st ChunkScan, max_body int) !bool {
 			}
 			return false
 		}
+		if i - st.pos > max_chunk_line_bytes {
+			return refuse(400, 'chunk line too long')
+		}
 		if size == 0 {
 			st.pos = i
 			st.in_trailers = true
