@@ -101,7 +101,7 @@ app.listen('0.0.0.0:8080')!
 - HEAD keeps headers and drops the body. `Date` (when enabled), `Server` (when set) and
   `Content-Length` are written by the framework.
 
-Middleware: `fn (mut c Ctx, next Next)`; calling `next(mut c)` runs the rest of the chain. Global and per-route
+Middleware: `fn (mut c Ctx)`; calling `c.next()` runs the rest of the chain. Global and per-route
 chains are flattened into one array per route at registration, and `Ctx` carries the current index, so a request
 creates no closures. Built-ins: `recover`, `gzip`, `cors`, `logger`.
 
@@ -165,9 +165,9 @@ into the write buffer by the middleware.
 
 ## JSON encoder
 
-`viltrum.json.encode_into[T](mut buf []u8, value T)` generated with `$for field in T.fields`. Supports integers,
+`viltrum.jsonenc.encode_into[T](mut buf []u8, value T)` generated with `$for field in T.fields`. Supports integers,
 floats (shortest round-trip via the C formatter into a stack buffer), bools, strings (escaped per RFC 8259),
-arrays, nested structs, and `@[json: 'name']` / `@[json: '-']`. This is the framework's standard JSON for
+arrays, nested structs. Field attributes (`@[json: ...]`) are backlog: reading them per call would allocate. This is the framework's standard JSON for
 HttpArena's standard mode. Decoding keeps using V's `json` module for now.
 
 ## gzip

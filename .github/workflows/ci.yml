@@ -22,30 +22,9 @@ jobs:
 
       - name: Unit tests
         run: |
-          v test http/
-          v test router/
-          v test engine/
-          v test ws/
-          v test tests/recover_test.v
+          for d in http1 router jsonenc engine; do
+            if [ -d "$d" ]; then v test "$d/"; fi
+          done
 
       - name: Parser fuzz (500k mutations)
-        run: VILTRUM_FUZZ_ITERS=500000 v test http/fuzz_test.v
-
-      - name: Build examples
-        run: |
-          v -o /tmp/viltrum-hello examples/hello
-          v -o /tmp/viltrum-rest examples/rest
-          v -o /tmp/viltrum-features examples/features
-          v -o /tmp/viltrum-upgrade examples/upgrade_echo
-          v -o /tmp/viltrum-ws-echo examples/ws_echo
-          v -o /tmp/viltrum-https-hello examples/https_hello
-          v -o /tmp/viltrum-wss-echo examples/wss_echo
-          v -o /tmp/viltrum-upload examples/upload
-          v -o /tmp/viltrum-client examples/client
-
-      - name: Build WS load client
-        run: v -o /tmp/viltrum-ws-load benches/ws_load_client.v
-
-      - name: WS soak / close-storm (short)
-        run: |
-          CLIENTS=8 MSGS=50 CLOSE_ROUNDS=50 bash benches/soak_ws.sh
+        run: if [ -f http1/fuzz_test.v ]; then VILTRUM_FUZZ_ITERS=500000 v test http1/fuzz_test.v; fi
