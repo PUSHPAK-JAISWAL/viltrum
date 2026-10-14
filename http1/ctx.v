@@ -41,6 +41,7 @@ pub mut:
 	send_date bool = true
 	server    string
 	date      DateCache
+	deflater  &Deflater = unsafe { nil } // set by the worker; gzip passes through while nil
 mut:
 	extra  [16]HeaderPair
 	nextra int
