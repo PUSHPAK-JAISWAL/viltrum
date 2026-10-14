@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.1](https://github.com/Tuntii/viltrum/compare/v0.13.0...v0.13.1) (2026-10-14)
+
+### Performance Improvements
+
+* gzip middleware on miniz instead of compress.gzip ([b7c083b](https://github.com/Tuntii/viltrum/commit/b7c083b4d36065d27c26f77a4f0a06cd6799e1de))
+
 ## [0.13.0](https://github.com/Tuntii/viltrum/compare/v0.12.3...v0.13.0) (2026-10-13)
 
 ### Features
