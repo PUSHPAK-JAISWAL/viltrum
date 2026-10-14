@@ -119,17 +119,19 @@ fn (mut r Reader) closed(mut conn net.TcpConn) bool {
 	return false
 }
 
-fn read_until_eof(mut conn net.TcpConn) int {
+// read_until_eof returns the bytes read and whether the peer closed (eof) rather
+// than the client read timeout firing.
+fn read_until_eof(mut conn net.TcpConn) (int, bool) {
 	mut tmp := []u8{len: 64 * 1024}
 	mut total := 0
 	for {
-		n := conn.read(mut tmp) or { return total }
+		n := conn.read(mut tmp) or { return total, err.code() != net.err_timed_out_code }
 		if n <= 0 {
-			return total
+			return total, true
 		}
 		total += n
 	}
-	return total
+	return total, true
 }
 
 fn test_pipelined_burst_with_bodies() {
@@ -230,7 +232,7 @@ fn test_client_that_never_reads_is_closed() {
 	mut c := dial(addr)
 	c.write('GET /big HTTP/1.1\r\nHost: x\r\n\r\n'.repeat(30).bytes()) or { panic(err) }
 	time.sleep(3500 * time.millisecond)
-	got := read_until_eof(mut c)
+	got, _ := read_until_eof(mut c)
 	assert got < 30 * big_body.len
 	c.close() or {}
 }
@@ -251,7 +253,8 @@ fn test_slowloris_is_closed() {
 		c.write('X'.bytes()) or { break }
 	}
 	time.sleep(500 * time.millisecond)
-	assert read_until_eof(mut c) == 0
+	got, eof := read_until_eof(mut c)
+	assert got == 0 && eof, 'server did not close the slow connection'
 	c.close() or {}
 }
 
@@ -274,7 +277,8 @@ fn test_idle_timeout_and_max_conns() {
 	assert st503 == 503
 	b.close() or {}
 	time.sleep(2500 * time.millisecond)
-	assert read_until_eof(mut a) == 0
+	got, eof := read_until_eof(mut a)
+	assert got == 0 && eof, 'server did not close the idle connection'
 	a.close() or {}
 }
 

@@ -45,6 +45,7 @@ mut:
 	count      &ConnCount
 	now        i64 // ms (time.ticks)
 	last_sweep i64
+	paused     bool // listener removed from epoll after EMFILE/ENFILE
 }
 
 fn run_worker(index int, lfd int, r &router.Router, opts Options, mut stop Stop, mut count ConnCount) {
@@ -94,6 +95,11 @@ fn (mut l Loop) accept_all() {
 	for {
 		fd := C.accept4(l.lfd, unsafe { nil }, unsafe { nil }, C.SOCK_NONBLOCK | C.SOCK_CLOEXEC)
 		if fd < 0 {
+			if C.errno == C.EMFILE || C.errno == C.ENFILE {
+				// out of fds: the backlog keeps the listener readable, so stop polling it until sweep
+				l.ctl(C.EPOLL_CTL_DEL, l.lfd, 0)
+				l.paused = true
+			}
 			// EAGAIN, or an error the next readiness event retries
 			return
 		}
@@ -175,11 +181,12 @@ fn (mut l Loop) on_readable(mut c Conn) {
 			c.rbuf.len += n
 		}
 		was_reading := c.reading
+		reqs_before := l.w.requests
 		l.drain(mut c)
 		if c.fd < 0 || c.out_armed {
 			return
 		}
-		if c.reading && !was_reading {
+		if c.reading && (!was_reading || l.w.requests != reqs_before) {
 			c.deadline_ms = l.now + l.opts.read_timeout.milliseconds()
 		} else if !c.reading {
 			c.deadline_ms = l.now + l.opts.idle_timeout.milliseconds()
@@ -260,6 +267,10 @@ fn (mut l Loop) close(mut c Conn) {
 }
 
 fn (mut l Loop) sweep() {
+	if l.paused {
+		l.paused = false
+		l.ctl(C.EPOLL_CTL_ADD, l.lfd, u32(C.EPOLLIN))
+	}
 	for i in 0 .. l.conns.len {
 		if isnil(l.conns[i]) || l.conns[i].fd < 0 || l.now <= l.conns[i].deadline_ms {
 			continue
