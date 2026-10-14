@@ -134,16 +134,25 @@ fn (r &Router) find_method(method http1.Method, path string, plen int, mut m Mat
 	clean := is_clean(path, plen)
 	if clean {
 		key := unsafe { tos(path.str, plen) }
+		// not `if x := m[key]`: that form allocates on a miss in V 0.5.2
 		if key in r.statics[int(method)] {
 			m.n = 0
 			return r.statics[int(method)][key]
 		}
 	}
-	for i in 0 .. r.routes.len {
-		if r.routes[i].method != method || (r.routes[i].static && clean) {
-			continue
+	// static routes beat dynamic ones for every path spelling: the map covered clean
+	// paths, so only an unclean path needs the static scan.
+	if !clean {
+		for i in 0 .. r.routes.len {
+			if r.routes[i].method == method && r.routes[i].static
+				&& match_segs(r.routes[i].segs, path, plen, mut m) {
+				return i
+			}
 		}
-		if match_segs(r.routes[i].segs, path, plen, mut m) {
+	}
+	for i in 0 .. r.routes.len {
+		if r.routes[i].method == method && !r.routes[i].static
+			&& match_segs(r.routes[i].segs, path, plen, mut m) {
 			return i
 		}
 	}

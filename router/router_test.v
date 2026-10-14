@@ -95,3 +95,15 @@ fn test_find_allocates_nothing() {
 	}
 	assert http1.allocated_bytes() - before == 0
 }
+
+fn test_static_beats_dynamic() {
+	mut r := &Router{}
+	r.add(.get, '/u/:id', chain()) or { panic(err) }
+	r.add(.get, '/u/me', chain()) or { panic(err) }
+	for p in ['/u/me', '/u/me/', '/u//me'] {
+		idx, _ := lookup(r, .get, p)
+		assert idx == 1, p
+	}
+	idx, _ := lookup(r, .get, '/u/7')
+	assert idx == 0
+}
