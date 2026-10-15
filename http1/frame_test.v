@@ -39,9 +39,9 @@ fn test_framing_errors_carry_status() {
 
 fn test_chunk_errors_carry_status() {
 	head := 'POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n'
-	for body in ['0x5\r\nhello\r\n0\r\n\r\n', '-5\r\nhello\r\n0\r\n\r\n', '000000005\r\nhello\r\n0\r\n\r\n',
-		'5\r\nhelloX0\r\n\r\n', '5\nhello\r\n0\r\n\r\n', '5 x\r\nhello\r\n0\r\n\r\n',
-		'0\r\nBad Trailer\r\n\r\n'] {
+	for body in ['0x5\r\nhello\r\n0\r\n\r\n', '-5\r\nhello\r\n0\r\n\r\n',
+		'000000005\r\nhello\r\n0\r\n\r\n', '5\r\nhelloX0\r\n\r\n', '5\nhello\r\n0\r\n\r\n',
+		'5 x\r\nhello\r\n0\r\n\r\n', '0\r\nBad Trailer\r\n\r\n'] {
 		assert status_of(head + body) == 400, body
 	}
 	assert status_of(head + 'ffffff\r\n') == 413

@@ -54,8 +54,8 @@ fn test_accepts_gzip() {
 }
 
 fn test_compressible() {
-	for t in ['text/plain; charset=utf-8', 'application/json', 'application/javascript', 'image/svg+xml',
-		'application/xml', 'Text/HTML'] {
+	for t in ['text/plain; charset=utf-8', 'application/json', 'application/javascript',
+		'image/svg+xml', 'application/xml', 'Text/HTML'] {
 		assert compressible(t), t
 	}
 	for t in ['image/png', 'application/octet-stream', ''] {
