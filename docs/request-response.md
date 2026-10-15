@@ -29,3 +29,11 @@ HEAD answers keep `Content-Length` and drop the body.
 ## Middleware
 
 `recover`, `gzip`, `cors` and `logger` are plain `fn (mut c Ctx)` middleware. V cannot catch panics: a panic exits the process. `recover` only turns a handler that wrote no response into 500 and closes the connection. Run the server under a supervisor (e.g. systemd `Restart=always`).
+
+## Handlers and `-prod`
+
+V 0.5.2 `-prod` builds (with the default Boehm GC) wrap every call statement in a walk over each local struct
+or array that holds pointers. Past 32 pointers that walk also takes the GC's global lock, so a handler that
+keeps a large array of structs in a local variable and then calls functions serializes all workers. Keep large
+data captured by the closure or behind a pointer, and keep handler locals scalar; `benches/httparena/main.v`
+shows the shape. The framework's own hot path is checked for this in CI (`scripts/gcpin_check.sh`).
