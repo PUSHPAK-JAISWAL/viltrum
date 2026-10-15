@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.1](https://github.com/Tuntii/viltrum/compare/v1.0.0...v1.0.1) (2026-10-15)
+
+### Performance Improvements
+
+* **jsonenc,engine:** keep V's per-call GC scope pins off the hot path ([696ffbd](https://github.com/Tuntii/viltrum/commit/696ffbdb8c5964f24259c7987ea761f4d317f6a7))
+
 ## [1.0.0](https://github.com/Tuntii/viltrum/compare/v0.13.1...v1.0.0) (2026-10-15)
 
 ### ⚠ BREAKING CHANGES
