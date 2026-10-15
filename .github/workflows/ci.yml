@@ -20,6 +20,9 @@ jobs:
           mkdir -p ~/.vmodules
           ln -sfn "$GITHUB_WORKSPACE" ~/.vmodules/viltrum
 
+      - name: Verify V formatting
+        run: v fmt -verify .
+
       - name: Unit tests
         run: |
           v test http1/

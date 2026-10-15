@@ -1,6 +1,6 @@
 module main
 
-import json
+import json2
 import os
 import viltrum
 
@@ -28,7 +28,7 @@ struct Page {
 }
 
 fn main() {
-	dataset := json.decode([]Item, os.read_file('/data/dataset.json') or { '[]' }) or { []Item{} }
+	dataset := json2.decode[[]Item](os.read_file('/data/dataset.json') or { '[]' }) or { []Item{} }
 	mut app := viltrum.new()
 	// One copy of the dataset per worker: totals are written per request, and a
 	// worker only touches its own copy.

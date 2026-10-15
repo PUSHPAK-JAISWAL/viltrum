@@ -1,6 +1,6 @@
 module jsonenc
 
-import json
+import json2
 import math
 
 struct Rating {
@@ -66,7 +66,7 @@ fn sample() Page {
 
 fn test_matches_vlib_json_for_plain_data() {
 	p := sample()
-	assert enc(p) == json.encode(p)
+	assert enc(p) == json2.encode(p, escape_unicode: true, time_as_unix: true)
 	assert enc([1, 2, 3]) == '[1,2,3]'
 	assert enc([]int{}) == '[]'
 	assert enc(true) == 'true'

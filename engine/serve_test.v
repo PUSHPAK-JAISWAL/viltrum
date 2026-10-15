@@ -144,8 +144,12 @@ fn test_pipelined_burst_with_bodies() {
 	for i in 0 .. 300 {
 		match i % 3 {
 			0 { burst += 'GET /p/${i} HTTP/1.1\r\nHost: x\r\n\r\n' }
-			1 { burst += 'POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: ${i.str().len}\r\n\r\n${i}' }
-			else { burst += 'POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n${i.str().len:x}\r\n${i}\r\n0\r\n\r\n' }
+			1 {
+				burst += 'POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: ${i.str().len}\r\n\r\n${i}'
+			}
+			else {
+				burst += 'POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n${i.str().len:x}\r\n${i}\r\n0\r\n\r\n'
+			}
 		}
 	}
 	c.write(burst.bytes()) or { panic(err) }
@@ -190,7 +194,7 @@ fn test_trickled_requests() {
 	mut c := dial(addr)
 	reqs :=
 		'POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n0\r\n\r\n' +
-		'POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello'
+			'POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello'
 	for b in reqs.bytes() {
 		c.write([b]) or { panic(err) }
 		time.sleep(time.millisecond)

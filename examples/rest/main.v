@@ -1,6 +1,6 @@
 module main
 
-import json
+import json2
 import sync
 import viltrum
 
@@ -34,7 +34,7 @@ fn main() {
 		c.json(200, u)
 	})
 	app.post('/users', fn [mut store] (mut c viltrum.Ctx) {
-		input := json.decode(User, c.body().bytestr()) or {
+		input := json2.decode[User](c.body().bytestr()) or {
 			c.text(400, 'bad json')
 			return
 		}
