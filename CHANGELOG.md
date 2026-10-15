@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.0.0](https://github.com/Tuntii/viltrum/compare/v0.13.1...v1.0.0) (2026-10-15)
+
+### ⚠ BREAKING CHANGES
+
+* fn (req Request) Response handlers, HeaderMap and the
+TLS, WebSocket, static, form and client features of 0.13 are gone in
+1.0; see the README for what returns later.
+* strip the tree to the v1 core scope
+
+### Features
+
+* **engine:** per-core epoll workers with SO_REUSEPORT, backpressure and timeouts ([6e24eef](https://github.com/Tuntii/viltrum/commit/6e24eef3cb4232f573e3518b2394e92b56aad824))
+* **engine:** socket-free request processing with a zero-allocation gate ([cffaf7f](https://github.com/Tuntii/viltrum/commit/cffaf7ff40df70a2e86d561f847a4345cd63d7f3))
+* **http1:** allocation-free byte helpers and GC probe ([1cf8cb0](https://github.com/Tuntii/viltrum/commit/1cf8cb068c51e154223bfa78704e11175233d959))
+* **http1:** Ctx with request views, buffered response writer and chain ([9b829b4](https://github.com/Tuntii/viltrum/commit/9b829b4539cd08798cd306b395d94a3d85da60cf))
+* **http1:** gzip middleware on miniz with per-worker compressor state ([d503fba](https://github.com/Tuntii/viltrum/commit/d503fbab1b49e6755bf43d287c7be4c7cfc1d6f1))
+* **http1:** response writer primitives and a per-second Date cache ([f856b83](https://github.com/Tuntii/viltrum/commit/f856b832b2617be83220507ab26836c7f0750c3a))
+* **http1:** resumable Content-Length and chunked framing ([c1ed846](https://github.com/Tuntii/viltrum/commit/c1ed846c84a4add334312b4972236d220187fae7))
+* **http1:** span-based request head parser with the v0.13 strictness ([a63e4be](https://github.com/Tuntii/viltrum/commit/a63e4be0dd7ab538dc1dab15b7e29011bfc60106))
+* **jsonenc:** compile-time JSON encoder that writes into a buffer ([c3a9878](https://github.com/Tuntii/viltrum/commit/c3a98787c1de26ded7066c116a02351326bd4eca))
+* **router:** compiled router with allocation-free matching ([909fec8](https://github.com/Tuntii/viltrum/commit/909fec85baa27e512b85208a976cd17714317f95))
+* viltrum 1.0 App API on the zero-allocation core ([386d1cb](https://github.com/Tuntii/viltrum/commit/386d1cbd23f6ecb4115dbd9c4202361bbf2d775b))
+
+### Bug Fixes
+
+* **engine:** fail serve on epoll setup errors, no 100 Continue for HTTP/1.0 ([35a47b5](https://github.com/Tuntii/viltrum/commit/35a47b5f0be6b263882f72a778db828582a46ed2))
+* **engine:** per-request read deadlines, failing timeout tests, no accept spin on EMFILE ([fdf7475](https://github.com/Tuntii/viltrum/commit/fdf7475b20bbde0e08b0bf4fc5bc964627b4cf86))
+* **http1:** drop header names/values that would split the response ([153e666](https://github.com/Tuntii/viltrum/commit/153e666105002c0e23613cdabf3e5d92f69440ba))
+* **http1:** enforce the chunk line limit on complete lines ([4a070ee](https://github.com/Tuntii/viltrum/commit/4a070eec4a836fc574ada2e8d0d578ccf8aa78e0))
+* **jsonenc:** shortest round-trip float output ([c19aaea](https://github.com/Tuntii/viltrum/commit/c19aaead5f9717405777520f942b47d630a262ee))
+* **router:** static routes win over dynamic ones for every path spelling ([b4ee622](https://github.com/Tuntii/viltrum/commit/b4ee622cdad52793af0b54c56a8f60f2a4499049))
+
+### Code Refactoring
+
+* strip the tree to the v1 core scope ([a8e9188](https://github.com/Tuntii/viltrum/commit/a8e91883069702b35b6c17dd9d6911cfad8eba03))
+
 ## [0.13.1](https://github.com/Tuntii/viltrum/compare/v0.13.0...v0.13.1) (2026-10-14)
 
 ### Performance Improvements
