@@ -354,8 +354,9 @@ pub fn (mut c Ctx) json[T](status int, val T) {
 	unsafe {
 		c.jbuf.len = 0
 	}
-	jsonenc.encode_into(mut c.jbuf, val)
-	c.respond(status, ct_json, c.jbuf.data, c.jbuf.len)
+	// `_ =` keeps V from pinning val around these calls (see jsonenc.encode_into)
+	_ = jsonenc.encode_into(mut c.jbuf, val)
+	_ = c.respond(status, ct_json, c.jbuf.data, c.jbuf.len)
 }
 
 pub fn (mut c Ctx) bytes(status int, content_type string, data []u8) {
@@ -377,12 +378,13 @@ pub fn (mut c Ctx) send_captured(body []u8, content_encoding string) {
 	c.write_response(c.status, c.cap_type, content_encoding, body.data, body.len)
 }
 
-fn (mut c Ctx) respond(status int, content_type string, body voidptr, n int) {
+// respond returns false when a response was already sent.
+fn (mut c Ctx) respond(status int, content_type string, body voidptr, n int) bool {
 	if c.responded {
 		$if viltrum_debug ? {
 			panic('viltrum: second response for one request')
 		}
-		return
+		return false
 	}
 	c.responded = true
 	c.status = status
@@ -394,9 +396,10 @@ fn (mut c Ctx) respond(status int, content_type string, body voidptr, n int) {
 				c.jbuf.push_many(body, n)
 			}
 		}
-		return
+		return true
 	}
 	c.write_response(status, content_type, '', body, n)
+	return true
 }
 
 fn (mut c Ctx) write_response(status int, content_type string, content_encoding string, body voidptr, n int) {

@@ -50,7 +50,10 @@ mut:
 }
 
 fn run_worker(index int, lfd int, r &router.Router, opts Options, mut stop Stop, mut count ConnCount) {
-	mut l := Loop{
+	// cold: one Loop per worker, on the heap. A by-value Loop holding conns would be
+	// pinned (walked, and past 32 conns locked) around every call in the event loop
+	// by V's -prod Boehm codegen; see jsonenc.encode_into.
+	mut l := &Loop{
 		w:     new_worker(r, opts, index)
 		epfd:  C.epoll_create1(0)
 		lfd:   lfd
@@ -68,13 +71,18 @@ fn run_worker(index int, lfd int, r &router.Router, opts Options, mut stop Stop,
 		}
 		return
 	}
+	l.run()
+}
+
+// run is the event loop; only the receiver pointer and scalars are in scope here.
+fn (mut l Loop) run() {
 	mut events := [max_events]C.epoll_event{}
-	for !stop.requested() {
+	for !l.stop.requested() {
 		n := C.epoll_wait(l.epfd, &events[0], max_events, 1000)
 		l.now = time.ticks()
 		for i in 0 .. n {
 			fd := unsafe { events[i].data.fd }
-			if fd == lfd {
+			if fd == l.lfd {
 				l.accept_all()
 			} else {
 				l.on_event(fd, events[i].events)

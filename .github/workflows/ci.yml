@@ -31,6 +31,9 @@ jobs:
       - name: Hot-path lint
         run: bash scripts/hotpath_lint.sh
 
+      - name: No GC scope pins on the hot path
+        run: bash scripts/gcpin_check.sh
+
       - name: Build examples
         run: |
           v -o /tmp/viltrum-hello examples/hello
