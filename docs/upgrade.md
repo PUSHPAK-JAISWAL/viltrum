@@ -1,3 +1,5 @@
+> **Not in 1.0.** This page describes v0.13. The feature returns on the 1.0 core later.
+
 # Connection upgrade / hijack (v0.4)
 
 How Viltrum leaves pure HTTP request/response and hands the byte stream to your code.

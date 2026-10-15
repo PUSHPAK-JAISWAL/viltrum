@@ -1,3 +1,5 @@
+> **Not in 1.0.** This page describes v0.13. The feature returns on the 1.0 core later.
+
 # TLS (`https://`) and WSS (`wss://`)
 
 In-process TLS for single-binary demos and simple deploys. Reverse-proxy TLS remains first-class (see [deploy.md](./deploy.md)).

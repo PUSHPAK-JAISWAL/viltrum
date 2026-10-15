@@ -1,6 +1,6 @@
 # Deploy (cleartext behind a reverse proxy)
 
-Viltrum speaks **cleartext HTTP/1.1** on TCP by default. For TLS at the edge, put **Caddy**, **nginx**, or another reverse proxy in front. Optional in-process HTTPS/WSS is available via `app.listen_tls` (see [tls.md](./tls.md)); proxy termination remains recommended for heavy production edge.
+Viltrum speaks **cleartext HTTP/1.1** on TCP by default. For TLS at the edge, put **Caddy**, **nginx**, or another reverse proxy in front. In-process TLS (`app.listen_tls`) is not in 1.0; terminate TLS at the proxy.
 
 ## Recommended shape
 
@@ -21,7 +21,6 @@ app.listen('127.0.0.1:8080')!
 | **Host** | Forward the original host (`Host` / `X-Forwarded-Host` as you prefer). Viltrum requires `Host` on HTTP/1.1 by default. |
 | **Timeouts** | Proxy idle/read timeouts should be ≥ app `idle_timeout` / `read_timeout` (defaults 60s / 30s) or intentionally shorter if you want the proxy to cut first. |
 | **Body size** | Proxy `client_max_body_size` (or equivalent) should match or sit under `max_body_bytes` (default 1 MiB) so errors are consistent. |
-| **WebSockets (`ws://`)** | Proxy must allow `Upgrade` / `Connection` hop-by-hop headers and long-lived connections. See [ws.md](./ws.md). |
 | **HTTP/2 at edge** | Fine. Proxy terminates H2 and talks HTTP/1.1 to Viltrum. |
 
 ## Caddy (sketch)
@@ -52,7 +51,7 @@ server {
 }
 ```
 
-WebSocket path (same upstream; hop-by-hop upgrade headers required):
+WebSocket path (v0.13 reference only, WebSocket is not in 1.0):
 
 ```nginx
 location /ws {
@@ -69,7 +68,7 @@ location /ws {
 
 - One process, one listen address (multi-listener is backlog).
 - Graceful stop: SIGINT/SIGTERM closes the listener; existing conns are not given a long drain window in 0.3.x.
-- Run under your supervisor (`systemd`, container restart policy, etc.).
+- Run under your supervisor (`systemd` with `Restart=always`, container restart policy, etc.): a panic exits the process.
 
 ## Trust and headers
 
@@ -79,5 +78,4 @@ Viltrum does **not** interpret `X-Forwarded-*` for security decisions. If you bu
 
 - Docs index: [README.md](./README.md)
 - Connection lifecycle: [connection.md](./connection.md)
-- WebSocket: [ws.md](./ws.md)
 - Product plan: [../ROADMAP.md](../ROADMAP.md)

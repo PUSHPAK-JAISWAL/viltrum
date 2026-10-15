@@ -1,115 +1,14 @@
-# Connection lifecycle
+# Connections
 
-How one TCP connection moves through Viltrum’s HTTP/1.1 engine (`engine/`).
-
-```
-accept
-  → read headers (+ body if Content-Length)
-  → parse Request
-  → Host check (HTTP/1.1)
-  → upgrade route match? ──yes──▶ Conn ownership → UpgradeFn → close (no keep-alive loop)
-  → handler
-  → write Response
-  → keep-alive idle wait  ─┐
-  → close / shutdown       │
-       ↑___________________┘  (next request on same conn)
-```
-
-Upgrade/hijack details: [upgrade.md](./upgrade.md).
-
-## Accept
-
-`listen_and_serve_opt` binds TCP and `accept`s in a loop. Each accepted conn is handled in its own spawned task (`handle_conn`). SIGINT/SIGTERM (when `handle_signals` is true) close the listener and end the accept loop.
-
-`epoll_cores` (and `use_epoll`, which is one core) is Linux-only and **off** by default. The loop counts requests on `ConnStats` without taking the stats mutex, and a matched upgrade/WS connection is handed to its own thread. See [benches/compare/CORES.md](../benches/compare/CORES.md).
-
-### Graceful drain
-
-After the accept loop stops, if `ServerOptions.drain_timeout` is **> 0**, the engine waits up to that duration for in-flight connections to finish (active count → 0), then returns. Default **0** means no wait (previous behavior): `listen` returns as soon as accept ends while handlers may still run briefly.
-
-```v
-app.server_options(ServerOptions{
-	handle_signals: true
-	drain_timeout:  10 * time.second
-})
-```
-
-### Conn stats (ops)
-
-The engine always tracks live connections for `max_conns` and drain. To **observe** counters from your process, pass a heap `ConnStats`:
-
-```v
-mut stats := new_conn_stats()
-app.server_options(ServerOptions{
-	max_conns: 1024
-	stats:     stats
-})
-// later:
-snap := stats.snapshot() // active, accepted, rejected_max, closed, requests
-```
-
-## Read
-
-1. **Idle vs active timeout.** After the first message on a connection, the next read uses `idle_timeout`. Once bytes arrive for a new request, `read_timeout` applies again.
-2. **Headers.** Bytes accumulate until `\r\n\r\n`. Cap: `max_header_bytes` → 413 / error close.
-3. **Body.** `Content-Length` or `Transfer-Encoding: chunked` (HTTP/1.1). Size must be ≤ `max_body_bytes`; for chunked that is the decoded size, and `req.body` holds the decoded bytes (trailers are dropped).
-4. **Strict framing.** Any other transfer coding, a coding list (`gzip, chunked`), TE together with `Content-Length`, a malformed chunk line, or bare CR/LF is rejected with **400** and the connection is closed (no keep-alive desync).
-5. **Leftover.** Extra bytes after the message stay in a per-conn buffer for the next request (pipelining-tolerant read path). Full HTTP/1.1 pipelining is not a product claim, but the read path is stress-tested with multi-request bursts (`engine/pipeline_test.v`).
-
-## Parse and validate
-
-`http.parse_request` builds method, target, normalized path, query, headers, body.
-
-- HTTP/1.1 requires a **Host** header when `require_host` is true (default).
-- Absolute-form targets (`http://host/path`) are reduced to path + query when parsing.
-- `OPTIONS *` is accepted as path `*` (no special router magic).
-
-## Handler
-
-The app/router runs and returns a `Response`. `req.ctx` is set from `App.set_ctx` before the handler runs. Shared mutable state behind `ctx` is the caller’s responsibility (use a mutex if needed).
-
-## Write
-
-Response is serialized as HTTP/1.1 status line + headers + body.
-
-- **HEAD:** the engine strips the response body before write but keeps `Content-Length` as the handler set it (same as GET would have returned).
-- **Connection:** `should_close` considers response `Connection: close`, request `Connection: close`, and HTTP/1.0 default close unless keep-alive.
-
-## Idle and close
-
-If keep-alive: loop waits for the next request with `idle_timeout`. On timeout, EOF, protocol error, or close decision, the conn is closed.
-
-### After upgrade / WebSocket
-
-When a route matches `app.upgrade` or `app.ws`, the HTTP keep-alive loop **stops**. The hijacked `Conn` gets:
-
-| Deadline | Value |
-|----------|--------|
-| Read | **`max(read_timeout, idle_timeout)`** |
-| Write | `write_timeout` |
-
-Rationale: HTTP `read_timeout` is sized for a single request (default 30s). Quiet WebSocket peers that only send occasional messages would otherwise be cut mid-session. Using the larger of the two keeps long-lived streams workable under default options (typically **60s** quiet) without an infinite hang. Override in the handler with `set_read_timeout` if you need more; send application pings for multi-hour idle. See [ws.md](./ws.md) and [upgrade.md](./upgrade.md).
-
-## Expect: 100-continue
-
-If the request includes `Expect: 100-continue` and a non-negative `Content-Length`, the engine sends a minimal **`100 Continue`** interim response before finishing the body read (when the body is not already fully buffered). Other `Expect` values are ignored (not treated as errors).
-
-## Limits (defaults)
-
-| Option | Default |
-|--------|---------|
-| `max_header_bytes` | 64 KiB |
-| `max_body_bytes` | 1 MiB |
-| `read_timeout` | 30s |
-| `write_timeout` | 30s |
-| `idle_timeout` | 60s |
-| `read_header_timeout` | 0 (= `read_timeout`) |
-| `max_conns` | 0 (unlimited); excess accepts get **503** + close |
-| `drain_timeout` | 0 — after accept stops, wait for in-flight (0 = no wait) |
-| `stats` | `nil` — optional `&ConnStats` for live counters (`requests` = HTTP messages on the spawn path) |
-| `send_date` | false — when true, add `Date` if handler omitted it |
-| `server_header` | `""` — when non-empty, add `Server` if handler omitted it |
-
-`Date` / `Server` apply only to engine-written HTTP responses (including 4xx/5xx). Upgrade handlers write their own bytes and are not auto-annotated.
-
-See `engine.ServerOptions` and [deploy.md](./deploy.md) for reverse-proxy timeout alignment.
+- One worker per CPU in the process affinity mask (`Options.workers` or `VILTRUM_WORKERS` override), each with
+  its own `SO_REUSEPORT` listener and epoll loop.
+- Each connection keeps an 8 KiB read and 16 KiB write buffer for its life; they grow only for larger messages
+  and shrink back when the connection closes.
+- Every complete request in a read is served, and the responses go out in one `send`. Processing pauses once
+  `Options.max_pending` (1 MiB) of output waits; reading pauses while output is pending.
+- Limits live under `Options.limits`: `max_header_bytes` 64 KiB (431), `max_body_bytes` 1 MiB (413),
+  `max_headers` 32 (431). `Options.max_conns` (503 and close).
+- Timeouts: `read_timeout` 30 s from a request's first byte, `idle_timeout` 60 s between requests,
+  `write_timeout` 30 s without write progress.
+- Framing and parse errors answer 4xx after any earlier pipelined responses, then close.
+- SIGINT/SIGTERM stop accepting; open connections are closed within a second.

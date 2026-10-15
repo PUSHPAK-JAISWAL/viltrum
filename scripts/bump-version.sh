@@ -21,6 +21,11 @@ if [[ -f "$ROOT/v.mod" ]]; then
 	fi
 fi
 
+# viltrum.v: pub const version = 'x.y.z'
+if [[ -f "$ROOT/viltrum.v" ]]; then
+	sed -i "s/pub const version = '[^']*'/pub const version = '${VERSION}'/" "$ROOT/viltrum.v"
+fi
+
 # package.json: release tooling mirror (optional)
 if [[ -f "$ROOT/package.json" ]] && command -v node >/dev/null 2>&1; then
 	node -e "

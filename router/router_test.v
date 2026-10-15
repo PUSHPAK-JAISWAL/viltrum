@@ -1,138 +1,109 @@
 module router
 
-import viltrum.http
+import viltrum.http1
 
-fn test_wildcard_and_param() {
-	mut r := Router.new()
-	mut hit := ''
-	r.get('/files/*path', fn [hit] (req http.Request) http.Response {
-		// capture via headers hack - just return path param in body
-		p := req.param('path') or { '' }
-		return http.Response.text(200, p)
-	})
-	// rebuild with mutable approach
-	r = Router.new()
-	r.get('/files/*path', fn (req http.Request) http.Response {
-		p := req.param('path') or { '' }
-		return http.Response.text(200, p)
-	})
-	r.get('/u/:id', fn (req http.Request) http.Response {
-		return http.Response.text(200, req.param('id') or { '' })
-	})
-	req := http.parse_request('GET /files/a/b/c HTTP/1.1\r\nHost: x\r\n\r\n'.bytes()) or {
-		assert false
-		return
-	}
-	resp := r.handle(req)
-	assert resp.body.bytestr() == 'a/b/c'
-	req2 := http.parse_request('GET /u/9 HTTP/1.1\r\nHost: x\r\n\r\n'.bytes()) or {
-		assert false
-		return
-	}
-	assert r.handle(req2).body.bytestr() == '9'
+fn h(mut c http1.Ctx) {}
+
+fn chain() []http1.Handler {
+	return [http1.Handler(h)]
 }
 
-fn test_head_falls_back_to_get() {
-	mut r := Router.new()
-	r.get('/hi', fn (req http.Request) http.Response {
-		return http.Response.text(200, 'hello')
-	})
-	req := http.parse_request('HEAD /hi HTTP/1.1\r\nHost: x\r\n\r\n'.bytes()) or {
-		assert false, err.msg()
-		return
+fn build() &Router {
+	mut r := &Router{}
+	for p in ['/', '/a/b', '/u/:id', '/u/:id/posts/:post', '/files/*rest', 'nolead'] {
+		r.add(.get, p, chain()) or { panic(err) }
 	}
-	resp := r.handle(req)
-	assert resp.status == 200
-	assert resp.body.bytestr() == 'hello' // handler may set body; engine strips on wire
-	assert resp.headers.get('content-length')? == '5'
+	r.add(.post, '/a/b', chain()) or { panic(err) }
+	r.add(.get, '/a/b', chain()) or { panic(err) } // duplicate: the first one wins
+	return r
 }
 
-fn test_patch_route() {
-	mut r := Router.new()
-	r.patch('/x', fn (req http.Request) http.Response {
-		return http.Response.text(200, 'patched')
-	})
-	req := http.parse_request('PATCH /x HTTP/1.1\r\nHost: x\r\n\r\n'.bytes()) or {
-		assert false, err.msg()
-		return
-	}
-	assert r.handle(req).body.bytestr() == 'patched'
-}
-
-// old_match is the pre-fast-path matcher: split both sides, build params.
-fn old_match(pattern []string, path []string) (map[string]string, bool) {
-	mut params := map[string]string{}
-	mut i := 0
-	for pi, p in pattern {
-		if p.starts_with('*') {
-			if pi != pattern.len - 1 || p.len == 1 {
-				return map[string]string{}, false
-			}
-			params[p[1..]] = if i < path.len { path[i..].join('/') } else { '' }
-			return params, true
+fn lookup(r &Router, method http1.Method, path string) (int, []string) {
+	mut m := Match{}
+	idx := r.find(method, path, mut m)
+	mut vals := []string{}
+	if idx >= 0 {
+		for k in 0 .. m.n {
+			s := m.spans[k]
+			vals << path[s.start..s.start + s.len]
 		}
-		if i >= path.len {
-			return map[string]string{}, false
-		}
-		if p.starts_with(':') {
-			params[p[1..]] = path[i]
-		} else if p != path[i] {
-			return map[string]string{}, false
-		}
-		i++
 	}
-	return params, i == path.len
+	return idx, vals
 }
 
-fn params_str(m map[string]string) string {
-	mut keys := m.keys()
-	keys.sort()
-	return keys.map('${it}=${m[it]}').join('&')
+fn test_matching() {
+	r := build()
+	cases := {
+		'/':             0
+		'/a/b':          1
+		'/a/b/':         1
+		'/a//b':         1
+		'//a/b':         1
+		'/nolead':       5
+		'/u/42':         2
+		'/u/42/':        2
+		'/u/42/posts/7': 3
+		'/files':        4
+		'/files/a/b/c':  4
+		'/u':            not_found
+		'/missing':      not_found
+		'/u/42/posts':   not_found
+		'/a/b/c':        not_found
+	}
+	for path, want in cases {
+		idx, _ := lookup(r, .get, path)
+		assert idx == want, path
+	}
+	_, v1 := lookup(r, .get, '/u/42/posts/7')
+	assert v1 == ['42', '7']
+	_, v2 := lookup(r, .get, '/files/a//b/')
+	assert v2 == ['a//b']
+	_, v3 := lookup(r, .get, '/files/')
+	assert v3 == ['']
 }
 
-fn test_static_fast_path_matches_split_matcher() {
-	patterns := ['/', '/a', 'a', '/a/', '/a/b', '/a//b', '/:id', '/a/:id', '/a/*rest', '/*', '/*all',
-		'/a/*rest/b']
-	paths := ['/', '', '*', '/a', '/a/', '/a//', '//a', '/a/b', '/a//b', '/a/b/', '/a/b/c', 'a',
-		'a/b', '/b', '/A']
-	for pat in patterns {
-		mut r := Router.new()
-		r.get(pat, fn (req http.Request) http.Response {
-			return http.Response.text(200, params_str(req.params))
-		})
-		pparts := split_pattern(normalize_pattern(pat))
+fn test_methods() {
+	r := build()
+	post, _ := lookup(r, .post, '/a/b')
+	assert post == 6
+	put, _ := lookup(r, .put, '/a/b')
+	assert put == method_not_allowed
+	head, _ := lookup(r, .head, '/u/9')
+	assert head == 2
+	miss, _ := lookup(r, .put, '/nope')
+	assert miss == not_found
+}
+
+fn test_bad_patterns() {
+	mut r := &Router{}
+	for p in ['/x/*rest/y', '/x/:', '/x/*', '/:a/:b/:c/:d/:e/:f/:g/:h/:i'] {
+		r.add(.get, p, chain()) or { continue }
+		assert false, 'accepted ${p}'
+	}
+}
+
+fn test_find_allocates_nothing() {
+	r := build()
+	mut m := Match{}
+	paths := ['/a/b', '/a//b', '/u/42/posts/7', '/files/x/y', '/missing']
+	before := http1.allocated_bytes()
+	for _ in 0 .. 10000 {
 		for p in paths {
-			req := http.Request{
-				method:  'get'
-				path:    p
-				headers: http.HeaderMap.new()
-			}
-			norm := if p == '*' { '*' } else { http.normalize_path(p) }
-			path_parts := if norm == '*' {
-				['*']
-			} else {
-				norm.trim_right('/').split('/').filter(it.len > 0)
-			}
-			want, ok := old_match(pparts, path_parts)
-			resp := r.handle(req)
-			if ok {
-				assert resp.status == 200, '${pat} ${p}'
-				assert resp.body.bytestr() == params_str(want), '${pat} ${p}'
-			} else {
-				assert resp.status == 404, '${pat} ${p}'
-			}
+			_ = r.find(.get, p, mut m)
 		}
+		_ = r.find(.put, '/a/b', mut m)
 	}
+	assert http1.allocated_bytes() - before == 0
 }
 
-fn test_405_when_path_matches_other_method() {
-	mut r := Router.new()
-	r.post('/x', fn (req http.Request) http.Response {
-		return http.Response.text(200, 'p')
-	})
-	req := http.parse_request('GET /x HTTP/1.1\r\nHost: x\r\n\r\n'.bytes()) or {
-		assert false, err.msg()
-		return
+fn test_static_beats_dynamic() {
+	mut r := &Router{}
+	r.add(.get, '/u/:id', chain()) or { panic(err) }
+	r.add(.get, '/u/me', chain()) or { panic(err) }
+	for p in ['/u/me', '/u/me/', '/u//me'] {
+		idx, _ := lookup(r, .get, p)
+		assert idx == 1, p
 	}
-	assert r.handle(req).status == 405
+	idx, _ := lookup(r, .get, '/u/7')
+	assert idx == 0
 }

@@ -1,502 +1,197 @@
 module viltrum
 
-// Viltrum HTTP App facade.
-// v0.4: connection hijack / upgrade on engine.Conn.
-// v0.5: first-party WebSocket via app.ws on the same Conn path.
-// v0.6: in-process HTTPS / WSS via app.listen_tls (mbedtls).
-import time
 import viltrum.engine
-import viltrum.http
+import viltrum.http1
 import viltrum.router
-import viltrum.staticf
-import viltrum.ws
 
-pub type Request = http.Request
-pub type Response = http.Response
-pub type Handler = fn (req http.Request) http.Response
+// Viltrum is an HTTP/1.1 framework for V with its own engine: one epoll worker per
+// CPU, and no allocation per request inside the framework.
 
-pub type Middleware = fn (next Handler) Handler
+pub const version = '1.0.0-dev'
 
-pub type ServerOptions = engine.ServerOptions
+pub type Ctx = http1.Ctx
+pub type Handler = fn (mut Ctx)
 
-// ConnStats is a live connection counter (max_conns, drain, ops). Pass via ServerOptions.stats.
-pub type ConnStats = engine.ConnStats
+pub type Method = http1.Method
+pub type Options = engine.Options
 
-// ConnStatsSnapshot is a point-in-time view from ConnStats.snapshot().
-pub type ConnStatsSnapshot = engine.ConnStatsSnapshot
-
-// new_conn_stats allocates a heap ConnStats for ServerOptions.stats.
-pub fn new_conn_stats() &ConnStats {
-	return engine.new_conn_stats()
+struct PendingRoute {
+	method   Method
+	pattern  string
+	handlers []Handler
 }
 
-// Conn is the upgrade/hijack stream (engine.Conn). Use this in UpgradeFn handlers.
-pub type Conn = engine.Conn
-
-// UpgradeFn takes over the connection after a matched app.upgrade route.
-pub type UpgradeFn = fn (mut c Conn, req Request)
-
-// WsSocket is the server-side WebSocket after 101.
-pub type WsSocket = ws.Socket
-
-// WsHandler runs after a successful WebSocket handshake.
-pub type WsHandler = fn (mut s WsSocket)
-
-// WsOptions configures limits, auto-pong, subprotocol, origin check, UTF-8.
-pub type WsOptions = ws.Options
-
-// TlsOptions is PEM cert/key paths for app.listen_tls.
-pub type TlsOptions = engine.TlsOptions
-
+@[heap]
 pub struct App {
 mut:
-	router      router.Router
-	middlewares []Middleware
-	upgrades    []engine.UpgradeRoute
-	ctx         voidptr
-	opts        engine.ServerOptions
+	global []Handler
+	routes []PendingRoute
+	opts   engine.Options
 }
 
-pub fn new() App {
-	return App{
-		router:   router.Router.new()
-		upgrades: []engine.UpgradeRoute{}
-		ctx:      unsafe { nil }
-		opts:     engine.ServerOptions{}
-	}
+pub fn new() &App {
+	return &App{}
 }
 
-pub fn (mut app App) set_ctx(ptr voidptr) {
-	app.ctx = ptr
-}
-
-// server_options sets engine limits/timeouts (not the HTTP OPTIONS method).
-pub fn (mut app App) server_options(opts engine.ServerOptions) {
+// server_options replaces the engine options (workers, limits, timeouts, Date, Server).
+pub fn (mut app App) server_options(opts Options) {
 	app.opts = opts
 }
 
-pub fn (mut app App) get(pattern string, handler Handler) {
-	app.router.get(pattern, handler)
+// use adds global middleware. It runs before every route, and before the 404 and
+// 405 answers too.
+pub fn (mut app App) use(mw Handler) {
+	app.global << mw
 }
 
-pub fn (mut app App) post(pattern string, handler Handler) {
-	app.router.post(pattern, handler)
-}
-
-pub fn (mut app App) put(pattern string, handler Handler) {
-	app.router.put(pattern, handler)
-}
-
-pub fn (mut app App) delete(pattern string, handler Handler) {
-	app.router.delete(pattern, handler)
-}
-
-pub fn (mut app App) patch(pattern string, handler Handler) {
-	app.router.patch(pattern, handler)
-}
-
-// options registers an HTTP OPTIONS route (use cors() for simple preflight).
-pub fn (mut app App) options(pattern string, handler Handler) {
-	app.router.options(pattern, handler)
-}
-
-pub fn (mut app App) head(pattern string, handler Handler) {
-	app.router.head(pattern, handler)
-}
-
-pub fn (mut app App) route(method string, pattern string, handler Handler) {
-	app.router.add(method, pattern, handler)
-}
-
-pub fn (mut app App) use(mw Middleware) {
-	app.middlewares << mw
-}
-
-// upgrade registers a connection take-over handler for method + path pattern.
-// When matched, the HTTP keep-alive loop stops and `handler` owns the Conn.
-// Global middleware does not run on upgrade routes. See docs/upgrade.md.
-pub fn (mut app App) upgrade(method string, pattern string, handler UpgradeFn) {
-	// Adapt viltrum.UpgradeFn → engine.UpgradeFn (same shape, distinct aliases in V).
-	h := handler
-	app.upgrades << engine.UpgradeRoute{
-		method:  method.to_upper()
-		pattern: pattern
-		handler: fn [h] (mut c engine.Conn, req http.Request) {
-			h(mut c, req)
-		}
+// handle registers handlers for method + pattern. The last one answers the request;
+// the ones before it are route middleware that call c.next().
+pub fn (mut app App) handle(method Method, pattern string, handlers ...Handler) {
+	app.routes << PendingRoute{
+		method:   method
+		pattern:  pattern
+		handlers: handlers
 	}
 }
 
-// ws registers a cleartext WebSocket route (RFC 6455) on GET + pattern.
-// Handshake, framing, and limits live in viltrum.ws; built on app.upgrade.
-// See docs/ws.md.
-pub fn (mut app App) ws(pattern string, handler WsHandler) {
-	app.ws_opts(pattern, ws.Options{}, handler)
+pub fn (mut app App) get(pattern string, handlers ...Handler) {
+	app.handle(.get, pattern, ...handlers)
 }
 
-// ws_opts is ws with explicit Options (message limits, subprotocol, origin check).
-pub fn (mut app App) ws_opts(pattern string, opts WsOptions, handler WsHandler) {
-	h := handler
-	// Adapt viltrum.WsHandler → ws.Handler (same shape; V treats module aliases distinctly).
-	up := ws.make_upgrade(opts, fn [h] (mut s ws.Socket) {
-		h(mut s)
-	})
-	app.upgrades << engine.UpgradeRoute{
-		method:  'GET'
-		pattern: pattern
-		handler: up
-	}
+pub fn (mut app App) post(pattern string, handlers ...Handler) {
+	app.handle(.post, pattern, ...handlers)
 }
 
-// chain applies route-level middleware (first = outermost), then handler.
-pub fn chain(mws []Middleware, handler Handler) Handler {
-	mut h := handler
-	for i := mws.len - 1; i >= 0; i-- {
-		h = mws[i](h)
-	}
-	return h
+pub fn (mut app App) put(pattern string, handlers ...Handler) {
+	app.handle(.put, pattern, ...handlers)
 }
 
-// Mount is a prefixing route builder for App.mount.
-pub struct Mount {
+pub fn (mut app App) patch(pattern string, handlers ...Handler) {
+	app.handle(.patch, pattern, ...handlers)
+}
+
+pub fn (mut app App) delete(pattern string, handlers ...Handler) {
+	app.handle(.delete, pattern, ...handlers)
+}
+
+pub fn (mut app App) head(pattern string, handlers ...Handler) {
+	app.handle(.head, pattern, ...handlers)
+}
+
+pub fn (mut app App) options(pattern string, handlers ...Handler) {
+	app.handle(.options, pattern, ...handlers)
+}
+
+pub struct Group {
 mut:
+	app    &App
 	prefix string
-	r      &router.Router
-	mws    []Middleware
+	mws    []Handler
 }
 
-pub fn (mut app App) mount(prefix string, setup fn (mut m Mount)) {
-	mut m := Mount{
-		prefix: http.normalize_path(prefix)
-		r:      &app.router
-		mws:    []Middleware{}
-	}
-	setup(mut m)
-}
-
-pub fn (mut m Mount) use(mw Middleware) {
-	m.mws << mw
-}
-
-pub fn (mut m Mount) get(pattern string, handler Handler) {
-	m.r.get(join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-pub fn (mut m Mount) post(pattern string, handler Handler) {
-	m.r.post(join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-pub fn (mut m Mount) put(pattern string, handler Handler) {
-	m.r.put(join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-pub fn (mut m Mount) delete(pattern string, handler Handler) {
-	m.r.delete(join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-pub fn (mut m Mount) patch(pattern string, handler Handler) {
-	m.r.patch(join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-pub fn (mut m Mount) options(pattern string, handler Handler) {
-	m.r.options(join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-pub fn (mut m Mount) head(pattern string, handler Handler) {
-	m.r.head(join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-pub fn (mut m Mount) route(method string, pattern string, handler Handler) {
-	m.r.add(method, join_mount(m.prefix, pattern), m.wrap(handler))
-}
-
-fn (m &Mount) wrap(handler Handler) Handler {
-	if m.mws.len == 0 {
-		return handler
-	}
-	return chain(m.mws, handler)
-}
-
-fn join_mount(prefix string, pattern string) string {
-	if prefix.len == 0 || prefix == '/' {
-		return pattern
-	}
-	p := if pattern.starts_with('/') { pattern } else { '/' + pattern }
-	return prefix.trim_right('/') + p
-}
-
-pub fn (mut app App) listen(addr string) ! {
-	handler, upgrades, opts := app.build_serve()
-	engine.listen_and_serve_full(addr, handler, upgrades, opts)!
-}
-
-// listen_tls serves HTTPS/1.1 (and WSS when app.ws routes are registered).
-// Cert and key are PEM file paths (see docs/tls.md). mbedtls only.
-pub fn (mut app App) listen_tls(addr string, tls TlsOptions) ! {
-	handler, upgrades, opts := app.build_serve()
-	engine.listen_and_serve_tls_full(addr, handler, upgrades, opts, tls)!
-}
-
-// build_serve wires middleware, app ctx, and upgrade routes for listen / listen_tls.
-fn (app &App) build_serve() (engine.Handler, []engine.UpgradeRoute, engine.ServerOptions) {
-	r := app.router
-	mws := app.middlewares.clone()
-	app_ctx := app.ctx
-	opts := app.opts
-	upgrades_in := app.upgrades.clone()
-
-	inner := fn [r] (req http.Request) http.Response {
-		return r.handle(req)
-	}
-
-	mut handler := Handler(inner)
-	for i := mws.len - 1; i >= 0; i-- {
-		mw := mws[i]
-		prev := handler
-		handler = mw(prev)
-	}
-
-	engine_handler := fn [handler, app_ctx] (req http.Request) http.Response {
-		mut rq := req
-		rq.ctx = app_ctx
-		return handler(rq)
-	}
-
-	// Inject app ctx into upgrade requests (same contract as HTTP handlers).
-	mut upgrades := []engine.UpgradeRoute{cap: upgrades_in.len}
-	for u in upgrades_in {
-		base := u.handler
-		upgrades << engine.UpgradeRoute{
-			method:  u.method
-			pattern: u.pattern
-			handler: fn [base, app_ctx] (mut c engine.Conn, req http.Request) {
-				mut rq := req
-				rq.ctx = app_ctx
-				base(mut c, rq)
-			}
-		}
-	}
-
-	return engine_handler, upgrades, opts
-}
-
-// switching_protocols is a convenience for upgrade handlers (101 + Upgrade header).
-pub fn switching_protocols(upgrade_proto string) http.Response {
-	return http.Response.switching_protocols(upgrade_proto)
-}
-
-// http_date formats a time as HTTP-date (IMF-fixdate, GMT). Prefer time.utc().
-pub fn http_date(t time.Time) string {
-	return http.http_date(t)
-}
-
-pub fn text(status int, body string) http.Response {
-	return http.Response.text(status, body)
-}
-
-pub fn json(status int, body string) http.Response {
-	return http.Response.json(status, body)
-}
-
-// json_escape escapes a string for a JSON string literal (not a full encoder).
-pub fn json_escape(s string) string {
-	return http.json_escape(s)
-}
-
-// FormPart is one multipart field (see Request.form_file / form_parts).
-pub type FormPart = http.FormPart
-
-// FormOptions caps multipart part count / per-part size (see Request.form_parts_opts).
-pub type FormOptions = http.FormOptions
-
-// ClientOptions configures the minimal HTTP client (fetch / fetch_tls).
-pub type ClientOptions = http.ClientOptions
-
-// ClientTls is mbedtls options for fetch_tls (insecure skip-verify default).
-pub type ClientTls = http.ClientTls
-
-// fetch is a one-shot cleartext HTTP/1.1 client (no TLS, no redirects).
-pub fn fetch(addr string, req Request) !Response {
-	return http.fetch(addr, req)
-}
-
-pub fn fetch_opt(addr string, req Request, opts ClientOptions) !Response {
-	return http.fetch_opt(addr, req, opts)
-}
-
-pub fn fetch_tls(addr string, req Request, tls ClientTls) !Response {
-	return http.fetch_tls(addr, req, tls)
-}
-
-pub fn fetch_tls_opt(addr string, req Request, opts ClientOptions, tls ClientTls) !Response {
-	return http.fetch_tls_opt(addr, req, opts, tls)
-}
-
-// client_get / client_post avoid clashing with App.get / App.post.
-pub fn client_get(addr string, path string) !Response {
-	return http.get(addr, path)
-}
-
-pub fn client_post(addr string, path string, body string, content_type string) !Response {
-	return http.post(addr, path, body, content_type)
-}
-
-pub fn client_get_tls(addr string, path string, tls ClientTls) !Response {
-	return http.get_tls(addr, path, tls)
-}
-
-pub fn client_post_tls(addr string, path string, body string, content_type string, tls ClientTls) !Response {
-	return http.post_tls(addr, path, body, content_type, tls)
-}
-
-pub fn empty(status int) http.Response {
-	return http.Response.empty(status)
-}
-
-pub fn not_found() http.Response {
-	return http.Response.not_found()
-}
-
-pub fn logger(next Handler) Handler {
-	return fn [next] (req http.Request) http.Response {
-		start := time.now()
-		resp := next(req)
-		ms := time.since(start).milliseconds()
-		eprintln('[viltrum] ${req.method} ${req.path} -> ${resp.status} ${ms}ms')
-		return resp
+// group returns routes under prefix that share mws.
+pub fn (mut app App) group(prefix string, mws ...Handler) Group {
+	return Group{
+		app:    app
+		prefix: prefix.trim_right('/')
+		mws:    mws
 	}
 }
 
-pub fn recover(next Handler) Handler {
-	return fn [next] (req http.Request) http.Response {
-		mut resp := next(req)
-		if resp.status == 0 {
-			resp = http.Response.text(500, 'internal error')
-			resp.set_connection_close()
-			return resp
-		}
-		// Key is already stored lowercased. Look it up without to_lower.
-		if resp.headers.get_or_lowered('content-length', '') == '' {
-			resp.headers.set_lowered('content-length', '${resp.body.len}')
-		}
-		return resp
+pub fn (mut g Group) handle(method Method, pattern string, handlers ...Handler) {
+	mut chain := g.mws.clone()
+	chain << handlers
+	g.app.handle(method, join_path(g.prefix, pattern), ...chain)
+}
+
+pub fn (mut g Group) get(pattern string, handlers ...Handler) {
+	g.handle(.get, pattern, ...handlers)
+}
+
+pub fn (mut g Group) post(pattern string, handlers ...Handler) {
+	g.handle(.post, pattern, ...handlers)
+}
+
+pub fn (mut g Group) put(pattern string, handlers ...Handler) {
+	g.handle(.put, pattern, ...handlers)
+}
+
+pub fn (mut g Group) patch(pattern string, handlers ...Handler) {
+	g.handle(.patch, pattern, ...handlers)
+}
+
+pub fn (mut g Group) delete(pattern string, handlers ...Handler) {
+	g.handle(.delete, pattern, ...handlers)
+}
+
+fn join_path(prefix string, pattern string) string {
+	if pattern == '' || pattern == '/' {
+		return if prefix == '' { '/' } else { prefix }
+	}
+	return prefix + if pattern.starts_with('/') {
+		pattern
+	} else {
+		'/' + pattern
 	}
 }
 
-pub fn cors(allow_origin string) Middleware {
-	origin := allow_origin
-	return fn [origin] (next Handler) Handler {
-		return fn [next, origin] (req http.Request) http.Response {
-			if req.method == 'OPTIONS' {
-				mut resp := http.Response.empty(204)
-				resp.headers.set('Access-Control-Allow-Origin', origin)
-				resp.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-				resp.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-				resp.headers.set('Access-Control-Max-Age', '86400')
-				return resp
-			}
-			mut resp := next(req)
-			resp.headers.set('Access-Control-Allow-Origin', origin)
-			return resp
-		}
+fn (app &App) build() !&router.Router {
+	mut r := &router.Router{}
+	for pr in app.routes {
+		mut chain := app.global.clone()
+		chain << pr.handlers
+		r.add(pr.method, pr.pattern, to_chain(chain))!
 	}
-}
-
-const gzip_min_bytes = 256 // below this the gzip framing costs more than it saves
-
-// gzip compresses text and JSON responses for clients that accept gzip. Bodies
-// under 256 bytes, already-encoded bodies, and other content types pass through.
-pub fn gzip(next Handler) Handler {
-	return fn [next] (req http.Request) http.Response {
-		mut resp := next(req)
-		if resp.body.len < gzip_min_bytes || resp.status < 200 || resp.status == 204
-			|| resp.status == 304 {
-			return resp
-		}
-		if resp.headers.get_or_lowered('content-encoding', '') != ''
-			|| !compressible(resp.headers.get_or_lowered('content-type', '')) {
-			return resp
-		}
-		resp.headers.add_lowered('vary', 'Accept-Encoding')
-		if !accepts_gzip(req.headers.get_or_lowered('accept-encoding', '')) {
-			return resp
-		}
-		packed := gzip_bytes(resp.body) or { return resp }
-		if packed.len >= resp.body.len {
-			return resp
-		}
-		resp.body = packed
-		resp.headers.set_lowered('content-encoding', 'gzip')
-		resp.headers.set_lowered('content-length', '${packed.len}')
-		return resp
+	if app.global.len > 0 {
+		mut nf := app.global.clone()
+		nf << Handler(not_found)
+		r.on_404 = to_chain(nf)
+		mut na := app.global.clone()
+		na << Handler(method_not_allowed)
+		r.on_405 = to_chain(na)
 	}
+	return r
 }
 
-fn compressible(content_type string) bool {
-	ct := content_type.to_lower()
-	return ct.starts_with('text/') || ct.contains('json') || ct.contains('javascript')
-		|| ct.contains('xml') || ct.contains('svg')
+fn not_found(mut c Ctx) {
+	c.text(404, 'not found')
 }
 
-// accepts_gzip reads an Accept-Encoding list. An explicit gzip entry wins over *;
-// either counts only with a q-value above 0.
-fn accepts_gzip(accept_encoding string) bool {
-	mut star := false
-	for part in accept_encoding.split(',') {
-		fields := part.split(';')
-		coding := fields[0].trim_space().to_lower()
-		if coding != 'gzip' && coding != '*' {
-			continue
-		}
-		mut q := 1.0
-		for f in fields[1..] {
-			kv := f.trim_space().to_lower()
-			if kv.starts_with('q=') {
-				q = kv[2..].f64()
-			}
-		}
-		if coding == 'gzip' {
-			return q > 0
-		}
-		star = q > 0
+fn method_not_allowed(mut c Ctx) {
+	c.text(405, 'method not allowed')
+}
+
+// listen serves until SIGINT/SIGTERM (or Options.stop).
+pub fn (app &App) listen(addr string) ! {
+	r := app.build()!
+	engine.serve(addr, r, app.opts)!
+}
+
+// worker_count is how many workers listen starts; size per-worker state with it and
+// index it with c.worker_id().
+pub fn (app &App) worker_count() int {
+	return engine.worker_count(app.opts.workers)
+}
+
+// handle_raw serves raw request bytes in-process and returns the raw response bytes.
+// Meant for tests: it rebuilds the router on every call.
+pub fn (app &App) handle_raw(raw string) !string {
+	r := app.build()!
+	mut w := engine.new_worker(r, Options{
+		...app.opts
+		send_date: false
+	}, 0)
+	mut c := engine.new_conn()
+	unsafe { c.rbuf.push_many(raw.str, raw.len) }
+	w.process(mut c)
+	return c.wbuf.bytestr()
+}
+
+// to_chain converts to the router's handler type (viltrum.Handler is a distinct fn alias).
+fn to_chain(hs []Handler) []http1.Handler {
+	mut out := []http1.Handler{cap: hs.len}
+	for h in hs {
+		out << http1.Handler(h)
 	}
-	return star
-}
-
-pub fn static_files(url_prefix string, root string) Middleware {
-	prefix := http.normalize_path(url_prefix)
-	root_path := root
-	return fn [prefix, root_path] (next Handler) Handler {
-		return fn [next, prefix, root_path] (req http.Request) http.Response {
-			if req.method != 'GET' && req.method != 'HEAD' {
-				return next(req)
-			}
-			path := http.normalize_path(req.path)
-			if prefix != '/' {
-				if path != prefix && !path.starts_with(prefix + '/') {
-					return next(req)
-				}
-			}
-			rel := if prefix == '/' {
-				path
-			} else if path == prefix {
-				'/'
-			} else {
-				path[prefix.len..]
-			}
-			if resp := staticf.file_response(root_path, rel) {
-				if req.method == 'HEAD' {
-					mut h := resp
-					h.body = []u8{}
-					return h
-				}
-				return resp
-			}
-			return next(req)
-		}
-	}
-}
-
-pub fn serve_file(root string, rel string) ?http.Response {
-	return staticf.file_response(root, rel)
+	return out
 }
