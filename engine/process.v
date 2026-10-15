@@ -70,6 +70,16 @@ pub fn new_worker(r &router.Router, opts Options, index int) &Worker {
 	return w
 }
 
+// is_http10 reports whether the request line at buf[off..] ends in HTTP/1.0; HTTP/1.0
+// clients do not understand 100 Continue.
+fn is_http10(buf []u8, off int) bool {
+	mut i := off
+	for i < buf.len && buf[i] != `\r` {
+		i++
+	}
+	return i > off && i < buf.len && buf[i - 1] == `0`
+}
+
 // process serves every complete request buffered in c.rbuf, appending responses to
 // c.wbuf, and compacts what is left. It never touches the socket.
 pub fn (mut w Worker) process(mut c Conn) {
@@ -82,7 +92,7 @@ pub fn (mut w Worker) process(mut c Conn) {
 			break
 		}
 		if n < 0 {
-			if c.frame.expect_continue && !c.frame.continue_sent {
+			if c.frame.expect_continue && !c.frame.continue_sent && !is_http10(c.rbuf, off) {
 				http1.append_str(mut c.wbuf, 'HTTP/1.1 100 Continue\r\n\r\n')
 				c.frame.continue_sent = true
 			}

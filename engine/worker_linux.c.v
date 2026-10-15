@@ -1,5 +1,6 @@
 module engine
 
+import sync.stdatomic
 import time
 import viltrum.router
 
@@ -57,7 +58,16 @@ fn run_worker(index int, lfd int, r &router.Router, opts Options, mut stop Stop,
 		stop:  stop
 		count: count
 	}
-	l.ctl(C.EPOLL_CTL_ADD, lfd, u32(C.EPOLLIN))
+	if l.epfd < 0 || !l.ctl(C.EPOLL_CTL_ADD, lfd, u32(C.EPOLLIN)) {
+		// serve returns an error once the workers stop
+		eprintln('[viltrum] worker ${index}: epoll setup failed') // cold: startup failure
+		stdatomic.add_i64(&count.failed, 1)
+		stop.request()
+		if l.epfd >= 0 {
+			C.close(l.epfd)
+		}
+		return
+	}
 	mut events := [max_events]C.epoll_event{}
 	for !stop.requested() {
 		n := C.epoll_wait(l.epfd, &events[0], max_events, 1000)
@@ -84,11 +94,11 @@ fn run_worker(index int, lfd int, r &router.Router, opts Options, mut stop Stop,
 	C.close(l.epfd)
 }
 
-fn (mut l Loop) ctl(op int, fd int, events u32) {
+fn (mut l Loop) ctl(op int, fd int, events u32) bool {
 	mut ev := C.epoll_event{}
 	ev.events = events
 	ev.data.fd = fd
-	C.epoll_ctl(l.epfd, op, fd, &ev)
+	return C.epoll_ctl(l.epfd, op, fd, &ev) == 0
 }
 
 fn (mut l Loop) accept_all() {
@@ -268,8 +278,8 @@ fn (mut l Loop) close(mut c Conn) {
 
 fn (mut l Loop) sweep() {
 	if l.paused {
-		l.paused = false
-		l.ctl(C.EPOLL_CTL_ADD, l.lfd, u32(C.EPOLLIN))
+		// a failed re-add leaves paused set so the next sweep retries
+		l.paused = !l.ctl(C.EPOLL_CTL_ADD, l.lfd, u32(C.EPOLLIN))
 	}
 	for i in 0 .. l.conns.len {
 		if isnil(l.conns[i]) || l.conns[i].fd < 0 || l.now <= l.conns[i].deadline_ms {

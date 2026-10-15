@@ -165,6 +165,17 @@ fn test_expect_continue_and_partial_requests() {
 	assert !c.reading && c.rbuf.len == 0
 }
 
+fn test_no_continue_for_http10() {
+	mut w := new_worker(make_router(), Options{ send_date: false }, 0)
+	mut c := new_conn()
+	run(mut w, mut c,
+		'POST /baseline11?a=1&b=2 HTTP/1.0\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\n'.bytes())
+	assert !c.wbuf.bytestr().contains('100 Continue')
+	c.rbuf << '20'.bytes()
+	w.process(mut c)
+	assert c.wbuf.bytestr().ends_with('\r\n\r\n23') && !c.wbuf.bytestr().contains('100 Continue')
+}
+
 fn test_misses_and_missing_host() {
 	mut w := new_worker(make_router(), Options{ send_date: false }, 0)
 	mut c := new_conn()

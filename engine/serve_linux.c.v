@@ -17,6 +17,7 @@ const listen_backlog = 4096
 struct ConnCount {
 mut:
 	active i64
+	failed i64 // workers that could not start
 }
 
 // try_add takes a slot unless max are taken; approximate under races, which is
@@ -60,6 +61,9 @@ pub fn serve(addr string, r &router.Router, opts Options) ! {
 	threads.wait()
 	for fd in lfds {
 		C.close(fd)
+	}
+	if count.failed > 0 {
+		return error('viltrum: ${count.failed} worker(s) failed to start epoll')
 	}
 }
 
