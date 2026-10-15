@@ -15,6 +15,11 @@ fn tag(mut c viltrum.Ctx) {
 	c.next()
 }
 
+fn redirect(mut c viltrum.Ctx) {
+	c.set_header('Location', c.query_param('next') or { '/' })
+	c.no_content(302)
+}
+
 fn silent(mut c viltrum.Ctx) {}
 
 fn big(mut c viltrum.Ctx) {
@@ -27,6 +32,7 @@ fn build_app() &viltrum.App {
 	a.get('/', hello)
 	mut api := a.group('/api', tag)
 	api.get('/users/:id', user)
+	a.get('/r', redirect)
 	a.get('/silent', viltrum.recover, silent)
 	a.get('/big', viltrum.gzip, big)
 	return a
@@ -46,6 +52,14 @@ fn test_routes_groups_and_global_middleware() {
 	assert r5.starts_with('HTTP/1.1 500 ') && r5.contains('Connection: close\r\n')
 	r6 := a.handle_raw('GET /big HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n')!
 	assert r6.contains('Content-Encoding: gzip\r\n')
+}
+
+fn test_header_injection_is_dropped() {
+	a := build_app()
+	r := a.handle_raw('GET /r?next=%2Fa%0d%0aSet-Cookie:%20x=1 HTTP/1.1\r\nHost: x\r\n\r\n')!
+	assert r.starts_with('HTTP/1.1 302 ') && !r.contains('Set-Cookie') && !r.contains('Location')
+	r2 := a.handle_raw('GET /r?next=%2Fok HTTP/1.1\r\nHost: x\r\n\r\n')!
+	assert r2.contains('Location: /ok\r\n')
 }
 
 fn test_bad_pattern_is_reported() {

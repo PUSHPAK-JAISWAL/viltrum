@@ -278,8 +278,12 @@ pub fn (mut c Ctx) close() {
 }
 
 // set_header adds a response header. At most 16; the strings must stay valid until
-// the response is written (literals and request views are fine).
+// the response is written (literals and request views are fine). A header whose name
+// is not a token or whose value holds CR, LF or NUL is dropped, never written.
 pub fn (mut c Ctx) set_header(name string, value string) {
+	if !valid_name(name) || !valid_value(value) {
+		return
+	}
 	if c.nextra == c.extra.len {
 		panic('viltrum: more than 16 response headers')
 	}
@@ -288,6 +292,28 @@ pub fn (mut c Ctx) set_header(name string, value string) {
 		value: value
 	}
 	c.nextra++
+}
+
+fn valid_name(name string) bool {
+	if name.len == 0 {
+		return false
+	}
+	for k in 0 .. name.len {
+		if !is_tchar(name[k]) {
+			return false
+		}
+	}
+	return true
+}
+
+fn valid_value(v string) bool {
+	for k in 0 .. v.len {
+		b := v[k]
+		if b == `\r` || b == `\n` || b == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 pub fn (c &Ctx) has_header(name string) bool {
@@ -376,7 +402,11 @@ fn (mut c Ctx) respond(status int, content_type string, body voidptr, n int) {
 fn (mut c Ctx) write_response(status int, content_type string, content_encoding string, body voidptr, n int) {
 	write_status_line(mut c.out, status)
 	if content_type.len > 0 {
-		write_header(mut c.out, 'Content-Type', content_type)
+		write_header(mut c.out, 'Content-Type', if valid_value(content_type) {
+			content_type
+		} else {
+			'application/octet-stream'
+		})
 	}
 	if content_encoding.len > 0 {
 		write_header(mut c.out, 'Content-Encoding', content_encoding)

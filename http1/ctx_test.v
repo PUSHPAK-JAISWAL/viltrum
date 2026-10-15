@@ -128,6 +128,20 @@ fn test_text_int_json_bytes() {
 	assert out_of(d).starts_with('HTTP/1.1 201 Created\r\nContent-Type: application/octet-stream\r\nContent-Length: 2\r\n')
 }
 
+fn test_invalid_headers_are_dropped() {
+	mut c := test_ctx('GET / HTTP/1.1\r\nHost: h\r\n\r\n')!
+	c.set_header('X-A', 'v\r\nSet-Cookie: x=1')
+	c.set_header('X B', 'v')
+	c.set_header('X:B', 'v')
+	c.set_header('', 'v')
+	c.set_header('X-Ok', 'fine')
+	c.bytes(200, 'text/plain\r\nX-Evil: 1', [u8(`a`)])
+	o := out_of(c)
+	assert !o.contains('Set-Cookie') && !o.contains('X B') && !o.contains('X:B')
+		&& !o.contains('X-Evil')
+	assert o.contains('X-Ok: fine\r\n') && o.contains('Content-Type: application/octet-stream\r\n')
+}
+
 fn test_capture_holds_the_response() {
 	mut c := test_ctx('GET / HTTP/1.1\r\nHost: h\r\n\r\n')!
 	c.capture = true
