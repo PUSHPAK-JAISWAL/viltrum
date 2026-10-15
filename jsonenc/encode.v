@@ -17,8 +17,10 @@ pub fn encode_into[T](mut out []u8, val T) {
 		write_u64(mut out, u64(val))
 	} $else $if T.unaliased_typ is $int {
 		write_i64(mut out, i64(val))
+	} $else $if T.unaliased_typ is f32 {
+		write_float(mut out, f64(val), true)
 	} $else $if T.unaliased_typ is $float {
-		write_f64(mut out, f64(val))
+		write_float(mut out, f64(val), false)
 	} $else $if T.unaliased_typ is $array {
 		out << `[`
 		for i, item in val {
@@ -128,15 +130,29 @@ fn write_i64(mut out []u8, n i64) {
 	write_u64(mut out, u64(n))
 }
 
-// write_f64 prints the shortest-safe %.17g form; NaN and infinities are null.
-fn write_f64(mut out []u8, f f64) {
+#include <stdlib.h>
+
+fn C.strtod(&char, voidptr) f64
+
+// write_float prints the shortest of %.15g, %.16g, %.17g that parses back to the same
+// value (f32: %.6g to %.9g, compared as f32); NaN and infinities are null.
+fn write_float(mut out []u8, f f64, is32 bool) {
 	if math.is_nan(f) || math.is_inf(f, 0) {
 		push(mut out, 'null')
 		return
 	}
 	mut tmp := [32]u8{}
+	lo := if is32 { 6 } else { 15 }
+	hi := if is32 { 10 } else { 18 }
 	unsafe {
-		n := C.snprintf(&char(&tmp[0]), 32, c'%.17g', f)
+		mut n := 0
+		for prec in lo .. hi {
+			n = C.snprintf(&char(&tmp[0]), 32, c'%.*g', prec, f)
+			back := C.strtod(&char(&tmp[0]), nil)
+			if (is32 && f32(back) == f32(f)) || back == f {
+				break
+			}
+		}
 		out.push_many(&tmp[0], n)
 	}
 }

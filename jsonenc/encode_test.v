@@ -86,6 +86,12 @@ fn test_floats_round_trip() {
 	for f in [0.0, 1.5, -2.25, 0.1, 1e300, 123456.789] {
 		assert enc(f).f64() == f, f.str()
 	}
+	assert enc(0.1) == '0.1', enc(0.1)
+	assert enc(29.99) == '29.99', enc(29.99)
+	assert enc(f32(0.1)) == '0.1'
+	third := 1.0 / 3.0
+	assert enc(third).f64() == third
+	assert enc(1e300).f64() == 1e300
 	assert enc(math.nan()) == 'null'
 	assert enc(math.inf(1)) == 'null'
 }
