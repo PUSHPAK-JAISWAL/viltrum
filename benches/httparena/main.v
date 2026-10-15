@@ -55,6 +55,7 @@ fn main() {
 		}
 		mut page := unsafe { items }
 		unsafe {
+			// n is clamped to items.len and jsonenc only reads page, so the shortened view is safe
 			page.len = n
 		}
 		c.json(200, Page{

@@ -25,3 +25,7 @@ to close the connection after the response. One response per request; a second c
 
 The framework writes `Content-Length`, `Date` (on by default) and `Server` (if `Options.server_header` is set).
 HEAD answers keep `Content-Length` and drop the body.
+
+## Middleware
+
+`recover`, `gzip`, `cors` and `logger` are plain `fn (mut c Ctx)` middleware. V cannot catch panics: a panic exits the process. `recover` only turns a handler that wrote no response into 500 and closes the connection. Run the server under a supervisor (e.g. systemd `Restart=always`).

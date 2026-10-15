@@ -55,9 +55,11 @@ buffer and are valid until the handler returns; `.clone()` what you keep.
 | Bodies | `Content-Length` or `chunked`. Other codings, TE+CL, duplicate or non-digit CL, `Name :`, obs-fold, bare CR/LF → **400** (parser fuzzed in CI) |
 | Engine | one `SO_REUSEPORT` epoll worker per CPU (cpuset-aware), backpressure, read/idle/write timeouts, `max_conns`, graceful SIGINT/SIGTERM |
 | Routing | `:param`, trailing `*rest`, groups, global and per-route middleware (`c.next()`) |
-| Middleware | `recover`, `gzip`, `cors`, `logger` |
+| Middleware | `recover`, `gzip`, `cors`, `logger` (`recover` cannot catch panics, see below) |
 | JSON | `c.json(200, value)`: compile-time encoder, no reflection |
 | Tests | `app.handle_raw(raw)` serves a raw request in-process |
+
+> **`recover` and panics.** V cannot catch panics: a panic exits the process. `recover` only turns a handler that wrote no response into 500 and closes the connection. Run the server under a supervisor (e.g. systemd `Restart=always`).
 
 Not in 1.0 yet (they return on the new core): TLS/WSS, WebSocket and upgrade, static files, forms and uploads,
 the HTTP client, non-Linux platforms.
@@ -107,8 +109,6 @@ Method notes: [benches/RESULTS.md](benches/RESULTS.md).
 | First hour | [docs/getting-started.md](docs/getting-started.md) |
 | Request shape / middleware | [docs/request-response.md](docs/request-response.md) |
 | Accept → close | [docs/connection.md](docs/connection.md) |
-| Hijack contract | [docs/upgrade.md](docs/upgrade.md) |
-| WebSocket limits | [docs/ws.md](docs/ws.md) |
 | Proxy deploy | [docs/deploy.md](docs/deploy.md) |
 | Full index | [docs/README.md](docs/README.md) |
 
@@ -117,11 +117,9 @@ Method notes: [benches/RESULTS.md](benches/RESULTS.md).
 | `examples/hello` | 8080 |
 | `examples/rest` | 8081 |
 | `examples/features` | 8082 |
-| `examples/upgrade_echo` | 8083 |
-| `examples/ws_echo` | 8084 |
 
 ```bash
-v test http/ && v test router/ && v test engine/ && v test ws/
+v test http1/ jsonenc/ router/ engine/ tests/
 ```
 
 ---

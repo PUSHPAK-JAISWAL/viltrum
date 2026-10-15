@@ -6,9 +6,9 @@
   and shrink back when the connection closes.
 - Every complete request in a read is served, and the responses go out in one `send`. Processing pauses once
   `Options.max_pending` (1 MiB) of output waits; reading pauses while output is pending.
-- Limits: `max_header_bytes` 64 KiB (431), `max_body_bytes` 1 MiB (413), 32 header fields (431),
-  `max_conns` (503 and close).
+- Limits live under `Options.limits`: `max_header_bytes` 64 KiB (431), `max_body_bytes` 1 MiB (413),
+  `max_headers` 32 (431). `Options.max_conns` (503 and close).
 - Timeouts: `read_timeout` 30 s from a request's first byte, `idle_timeout` 60 s between requests,
-  `write_timeout` 30 s while output is pending.
+  `write_timeout` 30 s without write progress.
 - Framing and parse errors answer 4xx after any earlier pipelined responses, then close.
 - SIGINT/SIGTERM stop accepting; open connections are closed within a second.
